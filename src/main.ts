@@ -500,8 +500,9 @@ async function generateShareCard(entry: Entry): Promise<string> {
   ctx.fillStyle = bgGrad;
   ctx.fillRect(0, 0, W, H);
 
-  // 封面（顶部全宽，底部渐变融入背景）
+  // 封面（仅在上半部分显示；下半整块不透明背景，图片不渗入文字区）
   let hasCover = false;
+  let coverH = 0;
   const primary = entry.images.find((i) => i.is_primary) || entry.images[0];
   if (primary) {
     try {
@@ -513,37 +514,28 @@ async function generateShareCard(entry: Entry): Promise<string> {
           img.onerror = () => reject(new Error("封面加载失败"));
           img.src = dataUrl;
         });
-        const coverH = Math.min(400, H * 0.45);
+        coverH = Math.min(400, H * 0.45);
         const scale = Math.max(W / img.width, coverH / img.height);
         const dw = img.width * scale;
         const dh = img.height * scale;
         ctx.drawImage(img, (W - dw) / 2, 0, dw, dh);
-        const grad = ctx.createLinearGradient(0, coverH - 120, 0, coverH);
-        grad.addColorStop(0, "rgba(26,26,46,0)");
-        grad.addColorStop(1, "rgba(26,26,46,1)");
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, coverH - 120, W, 120);
         hasCover = true;
       }
     } catch {
       // 封面加载失败，走占位布局
     }
   }
-
-  // 半透明文字底（主 UI 面板色 #16213e @ 70%，保证封面图上文字可读）
-  function drawTextPanel(y: number, h: number) {
-    ctx.fillStyle = "rgba(22,33,62,0.7)";
-    ctx.beginPath();
-    ctx.roundRect(24, y, W - 48, h, 12);
-    ctx.fill();
+  if (hasCover) {
+    // 下半部分整块不透明背景（主 UI 面板色），上下两段式布局
+    ctx.fillStyle = "#16213e";
+    ctx.fillRect(0, coverH, W, H - coverH);
   }
 
-  // 标题（带半透明底）
+  // 标题
   const titleY = hasCover ? 456 : 80;
-  drawTextPanel(titleY - 44, 92);
   ctx.fillStyle = "#e8e8e8";
   ctx.font = "bold 34px 'Microsoft YaHei', sans-serif";
-  drawWrappedText(ctx, entry.name, 48, titleY, W - 96, 44, 2);
+  drawWrappedText(ctx, entry.name, 32, titleY, W - 64, 44, 2);
 
   // 等级徽章（与主 UI rating-badge 一致的彩色圆角底 + 白字）
   const ratingColors: Record<string, string> = {
@@ -556,23 +548,22 @@ async function generateShareCard(entry: Entry): Promise<string> {
   ctx.font = "bold 22px 'Microsoft YaHei', sans-serif";
   ctx.fillStyle = ratingColor;
   ctx.beginPath();
-  ctx.roundRect(48, titleY + 26, 44, 34, 8);
+  ctx.roundRect(32, titleY + 24, 44, 34, 8);
   ctx.fill();
   ctx.fillStyle = "#ffffff";
-  ctx.fillText(entry.rating, 58, titleY + 53);
+  ctx.fillText(entry.rating, 42, titleY + 51);
   const genreName = genres.find((g) => g.id === entry.genre_id)?.name || "";
   const metaText = `${genreName}${entry.creator ? " · " + entry.creator : ""}${
     entry.tasting_date ? " · " + formatDate(entry.tasting_date) : ""
   }`.slice(0, 40); // 超长截断，避免溢出画布
   ctx.fillStyle = "#a0a0a0";
   ctx.font = "16px 'Microsoft YaHei', sans-serif";
-  ctx.fillText(metaText, 108, titleY + 56);
+  ctx.fillText(metaText, 92, titleY + 54);
 
-  // 评价（带半透明底，最多 8 行，避免压到标签区）
-  drawTextPanel(titleY + 76, 234);
+  // 评价（下半为不透明背景，文字直接可读；最多 8 行，避免压到标签区）
   ctx.fillStyle = "#e8e8e8";
   ctx.font = "16px 'Microsoft YaHei', sans-serif";
-  drawWrappedText(ctx, entry.review, 48, titleY + 102, W - 96, 28, 8);
+  drawWrappedText(ctx, entry.review, 32, titleY + 104, W - 64, 28, 8);
 
   // 标签（圆角胶囊，主 UI 强调色底）
   if (entry.tags.length > 0) {
