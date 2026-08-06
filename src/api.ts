@@ -82,6 +82,10 @@ export async function backupDatabase(): Promise<string> {
   return invoke("backup_database");
 }
 
+export async function importDatabase(sourcePath: string): Promise<void> {
+  return invoke("import_database", { sourcePath });
+}
+
 // ============================================================================
 // 封面爬取
 // ============================================================================

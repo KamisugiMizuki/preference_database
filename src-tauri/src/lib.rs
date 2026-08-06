@@ -262,6 +262,44 @@ fn init_database(conn: &Connection) -> SqliteResult<()> {
 // 辅助函数
 // ============================================================================
 
+/// 校验条目字段（与 CLAUDE.md 需求一致）：名称 ≤200、评价 10~20000、等级枚举、类型存在
+fn validate_entry_fields(
+    name: &str,
+    genre_id: &str,
+    rating: &str,
+    review: &str,
+    conn: &Connection,
+) -> Result<(), String> {
+    let name_len = name.trim().chars().count();
+    if name_len == 0 {
+        return Err("作品名称不能为空".to_string());
+    }
+    if name_len > 200 {
+        return Err(format!("作品名称长度不能超过 200 字符（当前 {}）", name_len));
+    }
+    let review_len = review.trim().chars().count();
+    if review_len < 10 {
+        return Err(format!("个人评价文段至少需要 10 字符（当前 {}）", review_len));
+    }
+    if review_len > 20000 {
+        return Err(format!("个人评价文段不能超过 20000 字符（当前 {}）", review_len));
+    }
+    if !["S", "A", "B", "C"].contains(&rating) {
+        return Err(format!("无效的评价等级: {}", rating));
+    }
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM genres WHERE id = ?1)",
+            params![genre_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !exists {
+        return Err("作品类型不存在".to_string());
+    }
+    Ok(())
+}
+
 // ============================================================================
 // 类型管理命令
 // ============================================================================
@@ -569,6 +607,7 @@ fn get_entry(id: String) -> Result<Entry, String> {
 #[tauri::command]
 fn create_entry(req: CreateEntryRequest) -> Result<Entry, String> {
     let conn = DB.lock().map_err(|e| e.to_string())?;
+    validate_entry_fields(&req.name, &req.genre_id, &req.rating, &req.review, &conn)?;
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
 
@@ -606,6 +645,7 @@ fn create_entry(req: CreateEntryRequest) -> Result<Entry, String> {
 #[tauri::command]
 fn update_entry(req: UpdateEntryRequest) -> Result<Entry, String> {
     let conn = DB.lock().map_err(|e| e.to_string())?;
+    validate_entry_fields(&req.name, &req.genre_id, &req.rating, &req.review, &conn)?;
     let now = Utc::now().to_rfc3339();
 
     conn.execute(
@@ -1545,6 +1585,45 @@ fn backup_database() -> Result<String, String> {
     Ok(backup_path.to_string_lossy().to_string())
 }
 
+/// 核心：把源 SQLite 文件在线导入目标连接（校验文件头 → Backup API）
+fn import_db_into(source_path: &str, dst: &mut Connection) -> Result<(), String> {
+    // 校验是 SQLite 文件（magic header）
+    {
+        use std::io::Read;
+        let mut f = std::fs::File::open(source_path).map_err(|e| format!("无法打开文件: {}", e))?;
+        let mut header = [0u8; 16];
+        f.read_exact(&mut header)
+            .map_err(|e| format!("读取文件失败: {}", e))?;
+        if &header != b"SQLite format 3\0" {
+            return Err("所选文件不是有效的 SQLite 数据库".to_string());
+        }
+    }
+
+    // 在线备份 API：把源文件数据导入目标连接（无需关闭连接/覆盖文件）
+    let src = Connection::open_with_flags(
+        source_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| format!("无法打开源数据库: {}", e))?;
+    let backup = rusqlite::backup::Backup::new(&src, dst)
+        .map_err(|e| format!("创建导入会话失败: {}", e))?;
+    backup
+        .run_to_completion(5, std::time::Duration::from_millis(250), None)
+        .map_err(|e| format!("导入失败: {}", e))?;
+
+    Ok(())
+}
+
+/// 导入数据库（恢复备份）：先自动备份当前库，再在线导入所选文件
+#[tauri::command]
+fn import_database(source_path: String) -> Result<(), String> {
+    // 覆盖前自动备份当前数据库
+    backup_database().map_err(|e| format!("备份当前数据库失败: {}", e))?;
+
+    let mut dst = DB.lock().map_err(|e| e.to_string())?;
+    import_db_into(&source_path, &mut dst)
+}
+
 #[tauri::command]
 fn get_image_base64(path: String) -> Result<String, String> {
     eprintln!("[DEBUG] get_image_base64 called");
@@ -1577,7 +1656,7 @@ pub fn run() {
         // 锁立即释放，确保其他命令可以正常获取
     }
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -1600,6 +1679,7 @@ pub fn run() {
             export_entries,
             // 备份
             backup_database,
+            import_database,
             // 封面爬取
             get_cover_sources,
             fetch_cover_candidates,
@@ -1607,8 +1687,18 @@ pub fn run() {
             import_local_image,
             get_image_base64,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => {
+            // 关闭时自动备份数据库
+            if let Err(e) = backup_database() {
+                eprintln!("[WARN] 退出时自动备份失败: {}", e);
+            }
+        }
+        _ => {}
+    });
 }
 
 // ============================================================================
@@ -1721,5 +1811,37 @@ mod cover_tests {
         // 相对 → 绝对 → 相对 往返
         let back = to_project_rel_path(&rel);
         assert_eq!(back, "resource/cover_image/a.jpg");
+    }
+
+    #[test]
+    fn test_import_db() {
+        let dir = std::env::temp_dir().join(format!("prefdb_import_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src_path = dir.join("src.db");
+        let dst_path = dir.join("dst.db");
+
+        // 源库：建表 + 插数据
+        {
+            let src = Connection::open(&src_path).unwrap();
+            src.execute_batch("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (42);")
+                .unwrap();
+        }
+        // 目标库：空连接
+        let mut dst = Connection::open(&dst_path).unwrap();
+
+        // 导入后数据可用
+        import_db_into(src_path.to_str().unwrap(), &mut dst).unwrap();
+        let v: i64 = dst
+            .query_row("SELECT x FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 42);
+
+        // 非法文件被拒绝
+        let bad = dir.join("bad.txt");
+        std::fs::write(&bad, "not a sqlite db").unwrap();
+        assert!(import_db_into(bad.to_str().unwrap(), &mut dst).is_err());
+
+        drop(dst);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

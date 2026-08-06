@@ -15,6 +15,8 @@ let genres: Genre[] = [];
 let entries: api.EntrySummary[] = [];
 let currentEntry: Entry | null = null;
 let originalImageIds: string[] = [];
+// 通用确认回调：删除条目 / 恢复数据库共用（null 时确认按钮走默认删除逻辑）
+let confirmAction: (() => void) | null = null;
 let selectedGenreIds: string[] = [];
 let selectedRatings: string[] = ["S", "A", "B", "C"];
 let currentSearchQuery: api.SearchQuery = {
@@ -514,11 +516,19 @@ function bindEvents() {
   // 删除按钮
   $("btn-delete-entry").addEventListener("click", () => {
     if (!currentEntry) return;
+    confirmAction = null;
     $("confirm-message").textContent = `确定要删除《${currentEntry.name}》吗？此操作不可撤销。`;
     openModal("modal-confirm");
   });
 
   $("btn-confirm-delete").addEventListener("click", async () => {
+    if (confirmAction) {
+      const action = confirmAction;
+      confirmAction = null;
+      closeModal("modal-confirm");
+      await action();
+      return;
+    }
     if (!currentEntry) return;
     try {
       await api.deleteEntries([currentEntry.id]);
@@ -756,6 +766,31 @@ function bindEvents() {
     } catch (err) {
       showToast("备份失败: " + (err as Error).message, "error");
     }
+  });
+
+  // 恢复数据库（导入备份）
+  $("btn-restore").addEventListener("click", async () => {
+    const selected = await open({
+      multiple: false,
+      title: "选择数据库备份文件",
+      filters: [{ name: "SQLite 数据库", extensions: ["db"] }],
+    });
+    if (!selected || typeof selected !== "string") return;
+
+    $("confirm-message").textContent =
+      "将用所选数据库覆盖当前全部数据（当前数据库会先自动备份到 backups/）。确定继续吗？";
+    confirmAction = async () => {
+      try {
+        showToast("正在导入数据库...");
+        await api.importDatabase(selected);
+        showToast("数据库导入成功");
+        await loadGenres();
+        await loadEntries();
+      } catch (err) {
+        showToast("导入失败: " + (err as Error).message, "error");
+      }
+    };
+    openModal("modal-confirm");
   });
 
   // 导入（简化实现：触发文件选择）
