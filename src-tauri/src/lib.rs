@@ -722,11 +722,21 @@ fn delete_entries(ids: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// 按筛选条件统计条目数（与列表共用同一过滤逻辑）
 #[tauri::command]
-fn get_entries_count() -> Result<i64, String> {
+fn get_entries_count(query: Option<SearchQuery>) -> Result<i64, String> {
     let conn = DB.lock().map_err(|e| e.to_string())?;
+    let (where_sql, params_vec) = match &query {
+        Some(q) => build_filter_sql(q),
+        None => (String::new(), vec![]),
+    };
+    let sql = format!(
+        "SELECT COUNT(DISTINCT e.id) FROM entries e JOIN genres g ON e.genre_id = g.id{}",
+        where_sql
+    );
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+        .query_row(&sql, params_refs.as_slice(), |row| row.get(0))
         .map_err(|e| e.to_string())?;
     Ok(count)
 }

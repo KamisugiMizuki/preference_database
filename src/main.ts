@@ -145,15 +145,25 @@ function renderGenres() {
   });
 }
 
-/// 是否有活跃筛选条件（决定空态文案）
+/// 是否有活跃筛选条件（决定空态文案；类型为白名单勾选，默认不勾=无筛选）
 function hasActiveFilter(): boolean {
   return (
     !!currentSearchQuery.keyword ||
-    selectedGenreIds.length < genres.length ||
+    selectedGenreIds.length > 0 ||
     selectedRatings.length < 4 ||
     selectedTags.length > 0 ||
     selectedYear !== null
   );
+}
+
+/// HTML 转义（所有用户内容插值必须经过此函数，防破版与注入）
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /// 类型专属色（与 styles.css --genre-* token 同步）
@@ -192,30 +202,30 @@ function renderEntryCards(list: api.EntrySummary[], images: (string | null)[], a
   const html = list
     .map(
       (e, idx) => `
-    <div class="entry-card" data-id="${e.id}" tabindex="0" role="button" aria-label="查看《${e.name}》详情">
+    <div class="entry-card" data-id="${e.id}" tabindex="0" role="button" aria-label="查看《${escapeHtml(e.name)}》详情">
       <input type="checkbox" class="entry-select" data-id="${e.id}" ${
         selectedEntryIds.has(e.id) ? "checked" : ""
       } />
       ${
         images[idx]
-          ? `<img class="entry-card-image" src="${images[idx]}" alt="${e.name}" />`
+          ? `<img class="entry-card-image" src="${images[idx]}" alt="${escapeHtml(e.name)}" />`
           : `<div class="entry-card-placeholder" style="background:${getGenreColor(
               e.genre_name
             )}22;color:${getGenreColor(e.genre_name)}">${getGenreIcon(e.genre_name)}</div>`
       }
       <div class="entry-card-content">
         <div class="entry-card-header">
-          <span class="entry-card-title">${e.name}</span>
+          <span class="entry-card-title">${escapeHtml(e.name)}</span>
           <span class="rating-badge ${e.rating}">${e.rating}</span>
-          <span class="entry-card-genre">${e.genre_name}</span>
+          <span class="entry-card-genre">${escapeHtml(e.genre_name)}</span>
         </div>
-        <p class="entry-card-preview">${e.review_preview}</p>
+        <p class="entry-card-preview">${escapeHtml(e.review_preview)}</p>
         ${
           e.tags.length > 0
             ? `<div class="entry-card-tags">
           ${e.tags
             .slice(0, 3)
-            .map((t: string) => `<span class="entry-tag">${t}</span>`)
+            .map((t: string) => `<span class="entry-tag">${escapeHtml(t)}</span>`)
             .join("")}
           ${e.tags.length > 3 ? `<span class="entry-tag">+${e.tags.length - 3}</span>` : ""}
         </div>`
@@ -331,7 +341,7 @@ async function renderDetailModal(entry: Entry) {
   if (primaryImage) {
     const idx = entry.images.findIndex((img) => img.id === primaryImage.id);
     mainImage.innerHTML = images[idx] 
-      ? `<img src="${images[idx]}" alt="${entry.name}" />`
+      ? `<img src="${images[idx]}" alt="${escapeHtml(entry.name)}" />`
       : `<div class="placeholder">${getGenreIcon($("detail-genre").textContent || "")}</div>`;
   } else {
     mainImage.innerHTML = `<div class="placeholder">${getGenreIcon($("detail-genre").textContent || "")}</div>`;
@@ -343,21 +353,21 @@ async function renderDetailModal(entry: Entry) {
       (img, idx) => `
     <img class="thumbnail ${primaryImage?.id === img.id ? "active" : ""}"
          src="${images[idx] || ""}"
-         data-path="${img.path}" />
+         data-path="${escapeHtml(img.path)}" />
   `
     )
     .join("");
 
   const tagsEl = $("detail-tags");
   tagsEl.innerHTML = entry.tags
-    .map((t) => `<span class="detail-tag">${t}</span>`)
+    .map((t) => `<span class="detail-tag">${escapeHtml(t)}</span>`)
     .join("");
 
   const linksEl = $("detail-links");
   linksEl.innerHTML = entry.links
     .map(
       (l) => `
-    <a class="detail-link" href="${l.url}" target="_blank">${l.label || l.url}</a>
+    <a class="detail-link" href="${escapeHtml(l.url)}" target="_blank">${escapeHtml(l.label || l.url)}</a>
   `
     )
     .join("");
@@ -365,7 +375,7 @@ async function renderDetailModal(entry: Entry) {
   thumbnails.querySelectorAll(".thumbnail").forEach((thumb, idx) => {
     thumb.addEventListener("click", () => {
       mainImage.innerHTML = images[idx] 
-        ? `<img src="${images[idx]}" alt="${entry.name}" />`
+        ? `<img src="${images[idx]}" alt="${escapeHtml(entry.name)}" />`
         : `<div class="placeholder">${getGenreIcon($("detail-genre").textContent || "")}</div>`;
       thumbnails.querySelectorAll(".thumbnail").forEach((t) => t.classList.remove("active"));
       thumb.classList.add("active");
@@ -596,7 +606,7 @@ async function loadEntries(append = false) {
 
     const [newEntries, count] = await Promise.all([
       api.getEntries(currentSearchQuery),
-      append ? Promise.resolve(totalCount) : api.getEntriesCount(),
+      append ? Promise.resolve(totalCount) : api.getEntriesCount({ ...currentSearchQuery }),
     ]);
 
     if (append) {
@@ -634,8 +644,8 @@ function clearFilters() {
     (cb as HTMLInputElement).checked = true;
   });
   renderGenres();
-  renderTagFilter([]);
-  renderYearFilter([]);
+  loadTagFilter();
+  loadYearFilter();
 
   currentSearchQuery.sort_by = "updated_at";
   currentSearchQuery.sort_order = "desc";
@@ -687,8 +697,8 @@ async function populateEntryForm(entry: Entry) {
     .map(
       (l) => `
     <div class="link-item">
-      <input type="text" class="link-label" value="${l.label}" placeholder="标签" />
-      <input type="url" class="link-url" value="${l.url}" placeholder="URL" />
+      <input type="text" class="link-label" value="${escapeHtml(l.label)}" placeholder="标签" />
+      <input type="url" class="link-url" value="${escapeHtml(l.url)}" placeholder="URL" />
       <button type="button" class="icon-btn remove-link">×</button>
     </div>
   `
@@ -713,7 +723,7 @@ async function populateEntryForm(entry: Entry) {
   imagesContainer.innerHTML = entry.images
     .map(
       (img, idx) => `
-    <div class="image-item" data-id="${img.id}" data-path="${img.path}">
+    <div class="image-item" data-id="${img.id}" data-path="${escapeHtml(img.path)}">
       <img src="${images[idx] || ""}" />
       <button type="button" class="remove-btn" data-id="${img.id}">×</button>
     </div>
@@ -726,7 +736,6 @@ async function populateEntryForm(entry: Entry) {
     btn.addEventListener("click", () => {
       const item = btn.closest(".image-item");
       if (item) {
-        console.log("Remove existing image from DOM:", item.getAttribute("data-id"));
         item.remove();
       }
     });
@@ -736,17 +745,21 @@ async function populateEntryForm(entry: Entry) {
 async function handleEntrySubmit(e: Event) {
   e.preventDefault();
 
+  const submitBtn = $<HTMLButtonElement>("btn-save-entry");
+  if (submitBtn.disabled) return; // 防双击重复提交
+  submitBtn.disabled = true;
+
   const id = $<HTMLInputElement>("entry-id").value;
-  const name = $<HTMLInputElement>("entry-name").value.trim();
-  const genreId = $<HTMLSelectElement>("entry-genre").value;
-  const creator = $<HTMLInputElement>("entry-creator").value.trim() || null;
-  const rating = $<HTMLSelectElement>("entry-rating").value;
-  const review = $<HTMLTextAreaElement>("entry-review").value;
-  const tastingDate = $<HTMLInputElement>("entry-date").value || null;
-  const tagsStr = $<HTMLInputElement>("entry-tags").value;
-  const tags = tagsStr
-    ? tagsStr.split(",").map((t) => t.trim()).filter(Boolean)
-    : [];
+    const name = $<HTMLInputElement>("entry-name").value.trim();
+    const genreId = $<HTMLSelectElement>("entry-genre").value;
+    const creator = $<HTMLInputElement>("entry-creator").value.trim() || null;
+    const rating = $<HTMLSelectElement>("entry-rating").value;
+    const review = $<HTMLTextAreaElement>("entry-review").value;
+    const tastingDate = $<HTMLInputElement>("entry-date").value || null;
+    const tagsStr = $<HTMLInputElement>("entry-tags").value;
+    const tags = tagsStr
+      ? tagsStr.split(",").map((t) => t.trim()).filter(Boolean)
+      : [];
 
   const linksContainer = $<HTMLDivElement>("links-container");
   const linkItems = linksContainer.querySelectorAll(".link-item");
@@ -812,6 +825,8 @@ async function handleEntrySubmit(e: Event) {
   } catch (err) {
     console.error("Failed to save entry:", err);
     showToast("保存失败: " + (err as Error).message, "error");
+  } finally {
+    submitBtn.disabled = false;
   }
 }
 
@@ -915,11 +930,11 @@ function bindEvents() {
     });
   });
 
-  // 点击模态框背景关闭
+  // 点击模态框背景关闭（统一走 closeModal，保证批量爬图等钩子生效）
   document.querySelectorAll(".modal").forEach((modal) => {
     modal.addEventListener("click", (e) => {
       if (e.target === modal) {
-        modal.classList.add("hidden");
+        closeModal(modal.id);
       }
     });
   });
@@ -1227,6 +1242,8 @@ function bindEvents() {
         await api.importDatabase(selected);
         showToast("数据库导入成功");
         await loadGenres();
+        await loadTagFilter();
+        await loadYearFilter();
         await loadEntries();
       } catch (err) {
         showToast("导入失败: " + (err as Error).message, "error");

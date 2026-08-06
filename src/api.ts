@@ -43,8 +43,8 @@ export async function deleteEntries(ids: string[]): Promise<void> {
   return invoke("delete_entries", { ids });
 }
 
-export async function getEntriesCount(): Promise<number> {
-  return invoke("get_entries_count");
+export async function getEntriesCount(query: SearchQuery | null = null): Promise<number> {
+  return invoke("get_entries_count", { query });
 }
 
 export async function getTags(): Promise<string[]> {
