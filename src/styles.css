@@ -263,6 +263,14 @@ input, select, textarea {
   margin-bottom: 20px;
 }
 
+.filter-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  opacity: 0.75;
+  margin-left: 4px;
+}
+
 .sidebar-section h3 {
   font-size: 12px;
   font-weight: 600;
@@ -395,6 +403,30 @@ input, select, textarea {
 #entry-count {
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.selection-info {
+  font-size: 13px;
+  color: var(--accent);
+  margin-left: 12px;
+}
+
+.selection-info strong {
+  font-size: 14px;
+}
+
+.text-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  text-decoration: underline;
+}
+
+.text-btn:hover {
+  opacity: 0.8;
 }
 
 .view-toggle {

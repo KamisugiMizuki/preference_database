@@ -101,11 +101,18 @@ function closeModal(id: string) {
   }
 
   $(id).classList.add("hidden");
-  // 无其他弹窗打开时还原焦点（无障碍）
-  const anyOpen = Array.from(document.querySelectorAll(".modal")).some(
+  // 焦点管理：有剩余弹窗则移入最上层（修复嵌套确认弹窗关闭后焦点丢失），否则还原
+  const openModals = Array.from(document.querySelectorAll(".modal")).filter(
     (m) => !m.classList.contains("hidden")
   );
-  if (!anyOpen) {
+  if (openModals.length > 0) {
+    const top = openModals[openModals.length - 1] as HTMLElement;
+    top
+      .querySelector<HTMLElement>(
+        'input:not([type="hidden"]), select, textarea, button, [tabindex]:not([tabindex="-1"])'
+      )
+      ?.focus();
+  } else {
     lastFocused?.focus?.();
   }
   // 批量爬图中关闭选择弹窗 → 终止批量
@@ -197,6 +204,23 @@ function formatError(err: unknown): string {
   return msg;
 }
 
+/// 图片 base64 缓存（会话内，path → dataUrl）
+const imageCache = new Map<string, string>();
+
+async function cachedImageBase64(path: string): Promise<string | null> {
+  if (imageCache.has(path)) return imageCache.get(path)!;
+  try {
+    const base64 = await api.getImageBase64(path);
+    const ext = path.split(".").pop()?.toLowerCase() || "jpg";
+    const dataUrl = `data:image/${ext};base64,${base64}`;
+    imageCache.set(path, dataUrl);
+    return dataUrl;
+  } catch (err) {
+    console.error("Failed to load image:", path, err);
+    return null;
+  }
+}
+
 /// HTML 转义（所有用户内容插值必须经过此函数，防破版与注入）
 function escapeHtml(s: string): string {
   return s
@@ -227,7 +251,7 @@ function renderEntryCards(list: api.EntrySummary[], append = false) {
     .map(
       (e, idx) => `
     <div class="entry-card" data-id="${e.id}" tabindex="0" role="button" aria-label="查看《${escapeHtml(e.name)}》详情">
-      <input type="checkbox" class="entry-select" data-id="${e.id}" ${
+      <input type="checkbox" class="entry-select" data-id="${e.id}" aria-label="选择《${escapeHtml(e.name)}》" ${
         selectedEntryIds.has(e.id) ? "checked" : ""
       } />
       <div class="entry-card-placeholder" data-idx="${idx}" style="background:${getGenreColor(
@@ -297,23 +321,17 @@ function renderEntryCards(list: api.EntrySummary[], append = false) {
     });
   }
 
-  // 异步加载主图：逐张填充占位，不阻塞列表渲染
+  // 异步加载主图：逐张填充占位，不阻塞列表渲染（走缓存）
   list.forEach(async (e, i) => {
     if (!e.primary_image) return;
-    try {
-      const base64 = await api.getImageBase64(e.primary_image);
-      const ext = e.primary_image.split(".").pop()?.toLowerCase() || "jpg";
-      const dataUrl = `data:image/${ext};base64,${base64}`;
-      const card = cards[startIdx + i];
-      const placeholder = card?.querySelector<HTMLDivElement>(
-        `.entry-card-placeholder[data-idx="${i}"]`
-      );
-      if (placeholder) {
-        placeholder.innerHTML = `<img class="entry-card-image" src="${dataUrl}" alt="${escapeHtml(e.name)}" />`;
-      }
-    } catch (err) {
-      // 图片加载失败：保留类型色占位
-      console.error("Failed to load image:", e.primary_image, err);
+    const dataUrl = await cachedImageBase64(e.primary_image);
+    if (!dataUrl) return;
+    const card = cards[startIdx + i];
+    const placeholder = card?.querySelector<HTMLDivElement>(
+      `.entry-card-placeholder[data-idx="${i}"]`
+    );
+    if (placeholder) {
+      placeholder.innerHTML = `<img class="entry-card-image" src="${dataUrl}" alt="${escapeHtml(e.name)}" />`;
     }
   });
 }
@@ -372,13 +390,7 @@ async function renderDetailModal(entry: Entry) {
   $("detail-review").textContent = entry.review;
 
   const imagePromises = entry.images.map(async (img) => {
-    try {
-      const base64 = await api.getImageBase64(img.path);
-      const ext = img.path.split(".").pop()?.toLowerCase() || "jpg";
-      return `data:image/${ext};base64,${base64}`;
-    } catch {
-      return null;
-    }
+    return cachedImageBase64(img.path);
   });
 
   const images = await Promise.all(imagePromises);
@@ -757,14 +769,28 @@ function clearFilters() {
   loadEntries();
 }
 
+// 详情加载进行中标志（防双击重复加载）
+let detailLoading = false;
+
 async function showEntryDetail(id: string) {
+  if (detailLoading) return;
+  detailLoading = true;
   try {
+    // 先开弹窗显示加载态，避免等待期间无反馈
+    const bodyEl = document.querySelector<HTMLElement>("#modal-detail .detail-content");
+    $("detail-title").textContent = "加载中…";
+    bodyEl?.classList.add("hidden");
+    openModal("modal-detail");
     const entry = await api.getEntry(id);
     await renderDetailModal(entry);
-    openModal("modal-detail");
+    $("detail-title").textContent = entry.name;
+    bodyEl?.classList.remove("hidden");
   } catch (err) {
     console.error("Failed to load entry:", err);
+    closeModal("modal-detail");
     showToast("加载详情失败", "error");
+  } finally {
+    detailLoading = false;
   }
 }
 
@@ -810,13 +836,7 @@ async function populateEntryForm(entry: Entry) {
   originalImageIds = entry.images.map((img) => img.id);
 
   const imagePromises = entry.images.map(async (img) => {
-    try {
-      const base64 = await api.getImageBase64(img.path);
-      const ext = img.path.split(".").pop()?.toLowerCase() || "jpg";
-      return `data:image/${ext};base64,${base64}`;
-    } catch {
-      return null;
-    }
+    return cachedImageBase64(img.path);
   });
 
   const images = await Promise.all(imagePromises);
@@ -1076,6 +1096,19 @@ function bindEvents() {
     openModal("modal-entry");
   });
 
+  // 搜索防抖（输入 300ms 后自动搜索）
+  let searchDebounce: number | undefined;
+  $("search-input").addEventListener("input", () => {
+    window.clearTimeout(searchDebounce);
+    searchDebounce = window.setTimeout(() => {
+      const keyword = $<HTMLInputElement>("search-input").value.trim();
+      const field = $<HTMLSelectElement>("search-field").value;
+      currentSearchQuery.keyword = keyword || null;
+      currentSearchQuery.search_field = field === "all" ? null : field;
+      loadEntries();
+    }, 300);
+  });
+
   $("search-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       $("search-btn").dispatchEvent(new Event("click"));
@@ -1111,11 +1144,19 @@ function bindEvents() {
   });
 
   // 视图切换
+  function updateViewButtons(view: "card" | "list") {
+    const cardsBtn = $<HTMLButtonElement>("view-cards");
+    const listBtn = $<HTMLButtonElement>("view-list");
+    cardsBtn.setAttribute("aria-pressed", String(view === "card"));
+    listBtn.setAttribute("aria-pressed", String(view === "list"));
+  }
+
   $("view-cards").addEventListener("click", () => {
     const entryListEl = $<HTMLDivElement>("entry-list");
     entryListEl.className = "entry-list card-view";
     $("view-cards").classList.add("active");
     $("view-list").classList.remove("active");
+    updateViewButtons("card");
     localStorage.setItem("prefdb-view", "card");
   });
 
@@ -1124,6 +1165,7 @@ function bindEvents() {
     entryListEl.className = "entry-list list-view";
     $("view-list").classList.add("active");
     $("view-cards").classList.remove("active");
+    updateViewButtons("list");
     localStorage.setItem("prefdb-view", "list");
   });
 
@@ -1211,6 +1253,13 @@ function bindEvents() {
     }
   });
 
+  // 清除选中（常驻入口）
+  $("btn-clear-selection").addEventListener("click", () => {
+    selectedEntryIds.clear();
+    updateBatchButton();
+    loadEntries();
+  });
+
   // 批量爬图
   $("btn-batch-cover").addEventListener("click", () => {
     if (selectedEntryIds.size === 0) return;
@@ -1229,14 +1278,14 @@ function bindEvents() {
     $("confirm-title").textContent = "批量删除";
     $("btn-confirm-delete").textContent = "删除";
     $("btn-confirm-delete").className = "danger-btn";
-    $("confirm-message").textContent = `确定删除选中的 ${n} 个作品吗？关联的封面图片将一并删除，此操作不可撤销。`;
+    $("confirm-message").textContent = `确定删除选中的 ${n} 条作品吗？关联的封面图片将一并删除，此操作不可撤销。`;
     confirmAction = async () => {
       try {
         await api.deleteEntries(Array.from(selectedEntryIds));
         const deleted = selectedEntryIds.size;
         selectedEntryIds.clear();
         updateBatchButton();
-        showToast(`已删除 ${deleted} 个作品`);
+        showToast(`已删除 ${deleted} 条作品`);
         loadEntries();
       } catch (err) {
         showToast("删除失败: " + formatError(err), "error");
@@ -1245,11 +1294,13 @@ function bindEvents() {
     openModal("modal-confirm");
   });
 
-  // 统计面板
+  // 统计面板（与当前筛选联动）
   $("btn-stats").addEventListener("click", async () => {
     try {
-      const stats = await api.getStats();
+      const stats = await api.getStats({ ...currentSearchQuery });
       $("stats-total").textContent = String(stats.total);
+      const hasFilter = hasActiveFilter();
+      $("stats-scope").textContent = hasFilter ? "当前筛选范围内" : "全部作品";
       renderStatsBars("stats-rating", stats.rating_dist, (v) => {
         const colors: Record<string, string> = { S: "#ff6b6b", A: "#ffa94d", B: "#69db7c", C: "#15aabf" };
         return colors[v] || "#a6adc8";
@@ -1545,6 +1596,11 @@ function updateBatchButton() {
   const delBtn = $<HTMLButtonElement>("btn-batch-delete");
   delBtn.disabled = selectedEntryIds.size === 0;
   delBtn.title = selectedEntryIds.size > 0 ? `删除选中（${selectedEntryIds.size}）` : "批量删除";
+  // 选中状态可见性
+  const infoEl = $<HTMLSpanElement>("selection-info");
+  const countEl = $<HTMLSpanElement>("selection-count");
+  infoEl.classList.toggle("hidden", selectedEntryIds.size === 0);
+  countEl.textContent = String(selectedEntryIds.size);
 }
 
 /// 依次处理批量队列中的条目；用户每完成一条的选择后继续下一条
@@ -1733,11 +1789,10 @@ async function addImageToContainer(localPath: string) {
   div.className = "image-item";
   
   try {
-    const base64 = await api.getImageBase64(localPath);
-    const ext = localPath.split(".").pop()?.toLowerCase() || "jpg";
-    const imgSrc = `data:image/${ext};base64,${base64}`;
+    const dataUrl = await cachedImageBase64(localPath);
+    if (!dataUrl) throw new Error("图片加载失败");
     div.innerHTML = `
-      <img src="${imgSrc}" />
+      <img src="${dataUrl}" />
       <button type="button" class="remove-btn">×</button>
     `;
   } catch (err) {
@@ -1785,6 +1840,8 @@ async function init() {
     document.getElementById("view-cards")?.classList.remove("active");
     document.getElementById("view-list")?.classList.add("active");
   }
+  document.getElementById("view-cards")?.setAttribute("aria-pressed", savedView === "list" ? "false" : "true");
+  document.getElementById("view-list")?.setAttribute("aria-pressed", savedView === "list" ? "true" : "false");
 
   // 全局 Esc 关闭最上层模态框（从后往前找，保证先关最上层；与脏表单确认弹窗叠加时行为正确）
   document.addEventListener("keydown", (e) => {
@@ -1805,6 +1862,51 @@ async function init() {
         closeModal(id);
         break;
       }
+    }
+  });
+
+  // 焦点陷阱：Tab 在弹窗内循环（无障碍）
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const openModals = Array.from(document.querySelectorAll(".modal")).filter(
+      (m) => !m.classList.contains("hidden")
+    );
+    const top = openModals[openModals.length - 1] as HTMLElement | undefined;
+    if (!top) return;
+    const focusables = Array.from(
+      top.querySelectorAll<HTMLElement>(
+        'input:not([type="hidden"]), select, textarea, button, [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter((el) => !el.hasAttribute("disabled"));
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (!top.contains(active)) {
+      e.preventDefault();
+      first.focus();
+    } else if (e.shiftKey && active === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  });
+
+  // 快捷键（无模态框打开时生效）：Ctrl+N 新增、Ctrl+F 聚焦搜索
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const anyOpen = Array.from(document.querySelectorAll(".modal")).some(
+      (m) => !m.classList.contains("hidden")
+    );
+    if (anyOpen) return;
+    if (e.key.toLowerCase() === "n") {
+      e.preventDefault();
+      $("btn-new").dispatchEvent(new MouseEvent("click"));
+    } else if (e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      $("search-input").focus();
     }
   });
 

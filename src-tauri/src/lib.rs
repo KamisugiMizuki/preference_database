@@ -1818,19 +1818,34 @@ pub struct Stats {
 }
 
 #[tauri::command]
-fn get_stats() -> Result<Stats, String> {
+fn get_stats(query: Option<SearchQuery>) -> Result<Stats, String> {
     let conn = DB.lock().map_err(|e| e.to_string())?;
+    let (where_sql, params_vec) = match &query {
+        Some(q) => build_filter_sql(q),
+        None => (String::new(), vec![]),
+    };
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
 
     let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+        .query_row(
+            &format!(
+                "SELECT COUNT(DISTINCT e.id) FROM entries e JOIN genres g ON e.genre_id = g.id{}",
+                where_sql
+            ),
+            params_refs.as_slice(),
+            |row| row.get(0),
+        )
         .map_err(|e| e.to_string())?;
 
     let rating_dist: Vec<(String, i64)> = {
         let mut stmt = conn
-            .prepare("SELECT rating, COUNT(*) FROM entries GROUP BY rating ORDER BY rating")
+            .prepare(&format!(
+                "SELECT e.rating, COUNT(DISTINCT e.id) FROM entries e JOIN genres g ON e.genre_id = g.id{} GROUP BY e.rating ORDER BY e.rating",
+                where_sql
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map(params_refs.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
@@ -1839,13 +1854,13 @@ fn get_stats() -> Result<Stats, String> {
 
     let genre_dist: Vec<(String, i64)> = {
         let mut stmt = conn
-            .prepare(
-                "SELECT g.name, COUNT(*) FROM entries e JOIN genres g ON e.genre_id = g.id
-                 GROUP BY g.name ORDER BY COUNT(*) DESC",
-            )
+            .prepare(&format!(
+                "SELECT g.name, COUNT(DISTINCT e.id) FROM entries e JOIN genres g ON e.genre_id = g.id{} GROUP BY g.name ORDER BY COUNT(DISTINCT e.id) DESC",
+                where_sql
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map(params_refs.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
@@ -1854,14 +1869,13 @@ fn get_stats() -> Result<Stats, String> {
 
     let year_dist: Vec<(String, i64)> = {
         let mut stmt = conn
-            .prepare(
-                "SELECT strftime('%Y', tasting_date), COUNT(*) FROM entries
-                 WHERE tasting_date IS NOT NULL AND tasting_date != ''
-                 GROUP BY 1 ORDER BY 1",
-            )
+            .prepare(&format!(
+                "SELECT strftime('%Y', e.tasting_date), COUNT(DISTINCT e.id) FROM entries e JOIN genres g ON e.genre_id = g.id{} WHERE e.tasting_date IS NOT NULL AND e.tasting_date != '' GROUP BY 1 ORDER BY 1",
+                where_sql
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map(params_refs.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;

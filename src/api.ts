@@ -62,8 +62,8 @@ export interface Stats {
   year_dist: [string, number][];
 }
 
-export async function getStats(): Promise<Stats> {
-  return invoke("get_stats");
+export async function getStats(query: SearchQuery | null = null): Promise<Stats> {
+  return invoke("get_stats", { query });
 }
 
 export async function addEntryImage(

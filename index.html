@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Preference Database - 文艺作品品鉴管理</title>
+    <title>文艺作品品鉴 · Preference Database</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
@@ -45,7 +45,7 @@
         <!-- 侧边栏 -->
         <aside class="sidebar">
           <div class="sidebar-section">
-            <h3>类型筛选</h3>
+            <h3>类型筛选 <span class="filter-hint">不勾选=全部</span></h3>
             <div id="genre-filter" class="filter-list"></div>
             <button id="btn-add-genre" class="text-btn">+ 添加类型</button>
           </div>
@@ -87,9 +87,13 @@
         <main class="content">
           <div class="content-header">
             <span id="entry-count">共 0 条作品</span>
+            <span id="selection-info" class="selection-info hidden">
+              已选 <strong id="selection-count">0</strong> 项
+              <button type="button" id="btn-clear-selection" class="text-btn">清除</button>
+            </span>
             <div class="view-toggle">
-              <button aria-label="卡片视图" id="view-cards" class="view-btn active" title="卡片视图">▦</button>
-              <button aria-label="列表视图" id="view-list" class="view-btn" title="列表视图">☰</button>
+              <button aria-label="卡片视图" id="view-cards" class="view-btn active" title="卡片视图" aria-pressed="true">▦</button>
+              <button aria-label="列表视图" id="view-list" class="view-btn" title="列表视图" aria-pressed="false">☰</button>
             </div>
           </div>
           <div id="entry-list" class="entry-list card-view"></div>
@@ -136,7 +140,7 @@
           </div>
           <div class="form-row">
             <label for="entry-rating">个人评价等级 *</label>
-            <select id="entry-rating" required>
+            <select id="entry-rating" required title="S/A/B/C 的含义由你自定义">
               <option value="S">S</option>
               <option value="A">A</option>
               <option value="B">B</option>
@@ -248,7 +252,7 @@
           <button class="modal-close" aria-label="关闭" data-modal="modal-stats">&times;</button>
         </div>
         <div class="stats-body">
-          <p class="stats-total">共 <strong id="stats-total">0</strong> 部作品</p>
+          <p class="stats-total">共 <strong id="stats-total">0</strong> 条作品 · <span id="stats-scope">全部作品</span></p>
           <h3>等级分布</h3>
           <div id="stats-rating" class="stats-bars"></div>
           <h3>类型分布</h3>
