@@ -77,9 +77,12 @@ npm run build && npm run tauri build
 Bangumi API 对**未登录**请求隐藏全部 R18 内容。默认匿名搜索即可使用（不显示 R18）；如需在 Bangumi 源中搜索 R18 作品封面，可配置你的登录 Cookie：
 
 1. 浏览器登录 [bgm.tv](https://bgm.tv)（账号需注册满 30 天，否则服务端仍会隐藏 R18，此为网站策略，无法绕过）
-2. 按 F12 打开开发者工具 → 应用/存储 → Cookie → 找到 `bgm.tv` 域名的 Cookie
-3. 将所有 Cookie 以 `key=value; key2=value2` 格式（单行）保存到本地文件 `config/bangumi_cookie.txt`（文件不存在则始终匿名搜索）
-4. 该文件包含你的登录凭证，**不会提交到 Git**
+2. 按 F12 打开开发者工具 → 切到 **Network（网络）** 面板 → 刷新页面 → 点击任意一个请求（如首页文档请求）
+3. 在右侧 **Headers（标头）→ Request Headers（请求标头）** 中找到 `Cookie` 行 → 右键 → **Copy value**（复制值）
+4. 将复制的内容粘贴到本地文件 `config/bangumi_cookie.txt`（单行即可，带不带 `Cookie:` 前缀都能识别）
+5. 该文件包含你的登录凭证，**不会提交到 Git**
+
+> **为什么不用控制台一行代码？** bgm.tv 的登录凭证（`chii_auth` 等）标记为 **HttpOnly**，JavaScript 无法读取，控制台运行 `document.cookie` 只能拿到非登录 cookie，对 R18 无效。必须通过 Network 面板复制完整请求头 Cookie（此方法能看到 HttpOnly cookie）。
 
 行为说明：
 

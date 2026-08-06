@@ -1124,15 +1124,24 @@ fn load_bangumi_cookie() -> Option<String> {
     read_cookie_file(&path)
 }
 
-/// 从文件读取 cookie：去除首尾空白与换行，内容为空返回 None
+/// 从文件读取 cookie：去除首尾空白与换行，容忍 "Cookie:" 前缀，内容为空返回 None
 fn read_cookie_file(path: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
     let cleaned = content.replace("\r", "").replace("\n", "");
     let trimmed = cleaned.trim().to_string();
     if trimmed.is_empty() {
+        return None;
+    }
+    // 容错：从 Network 面板复制的整行可能带 "Cookie: " 前缀
+    let stripped = trimmed
+        .strip_prefix("Cookie:")
+        .or_else(|| trimmed.strip_prefix("cookie:"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or(trimmed);
+    if stripped.is_empty() {
         None
     } else {
-        Some(trimmed)
+        Some(stripped)
     }
 }
 
@@ -1611,6 +1620,15 @@ mod cover_tests {
         std::fs::write(&path, "chii_auth=abc123;\n chii_sid=xyz;\r\n").unwrap();
         let v = read_cookie_file(&path).unwrap();
         assert_eq!(v, "chii_auth=abc123; chii_sid=xyz;");
+
+        // 带 "Cookie: " 前缀 → 剥离
+        std::fs::write(&path, "Cookie: chii_auth=abc123; chii_sid=xyz;").unwrap();
+        let v = read_cookie_file(&path).unwrap();
+        assert_eq!(v, "chii_auth=abc123; chii_sid=xyz;");
+
+        // 只有 "Cookie:" 前缀 → None
+        std::fs::write(&path, "Cookie:").unwrap();
+        assert!(read_cookie_file(&path).is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }
