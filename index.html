@@ -28,6 +28,7 @@
         </div>
         <div class="toolbar-right">
           <button id="btn-new" class="primary-btn">+ 新增</button>
+          <button id="btn-batch-cover" class="icon-btn" title="批量爬图" disabled>🖼️</button>
           <button id="btn-export" class="icon-btn" title="导出">📤</button>
           <button id="btn-import" class="icon-btn" title="导入">📥</button>
           <button id="btn-backup" class="icon-btn" title="备份数据库">💾</button>
@@ -298,6 +299,9 @@
         </div>
         <div class="cover-search-bar">
           <span id="cover-search-info"></span>
+          <button type="button" id="btn-cover-first" class="text-btn hidden">使用第一张</button>
+          <button type="button" id="btn-cover-skip" class="text-btn hidden">跳过本条目</button>
+          <button type="button" id="btn-cover-skip-all" class="text-btn hidden">全部跳过</button>
           <button type="button" id="btn-cover-change-source" class="text-btn">更换来源</button>
         </div>
         <div id="cover-candidates" class="cover-grid"></div>

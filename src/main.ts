@@ -21,6 +21,17 @@ let selectedGenreIds: string[] = [];
 let selectedRatings: string[] = ["S", "A", "B", "C"];
 let selectedTags: string[] = [];
 let selectedYear: number | null = null;
+// 列表多选（批量爬图用）
+let selectedEntryIds = new Set<string>();
+// 批量爬图状态
+let batchActive = false;
+let batchItems: { id: string; name: string }[] = [];
+let batchIndex = 0;
+let batchSourceId = "";
+let batchSourceName = "";
+let batchCurrentItem: { id: string; name: string } | null = null;
+let batchCurrentCandidates: api.CoverCandidate[] = [];
+let batchResolve: (() => void) | null = null;
 let currentSearchQuery: api.SearchQuery = {
   keyword: null,
   search_field: null,
@@ -60,6 +71,19 @@ function openModal(id: string) {
 
 function closeModal(id: string) {
   $(id).classList.add("hidden");
+  // 批量爬图中关闭选择弹窗 → 终止批量
+  if (id === "modal-cover-pick" && batchResolve) {
+    batchActive = false;
+    const r = batchResolve;
+    batchResolve = null;
+    r();
+  }
+  // 批量模式下关闭来源选择弹窗 → 取消批量
+  if (id === "modal-cover-source" && batchActive) {
+    batchActive = false;
+    selectedEntryIds.clear();
+    updateBatchButton();
+  }
 }
 
 function getGenreIcon(name: string): string {
@@ -160,6 +184,9 @@ async function renderEntries() {
     .map(
       (e, idx) => `
     <div class="entry-card" data-id="${e.id}">
+      <input type="checkbox" class="entry-select" data-id="${e.id}" ${
+        selectedEntryIds.has(e.id) ? "checked" : ""
+      } />
       ${
         images[idx]
           ? `<img class="entry-card-image" src="${images[idx]}" alt="${e.name}" />`
@@ -193,6 +220,20 @@ async function renderEntries() {
     card.addEventListener("click", () => {
       const id = card.getAttribute("data-id")!;
       showEntryDetail(id);
+    });
+  });
+
+  // 多选 checkbox：不触发卡片点击，维护选中集合
+  entryListEl.querySelectorAll(".entry-select").forEach((cb) => {
+    cb.addEventListener("click", (ev) => ev.stopPropagation());
+    cb.addEventListener("change", () => {
+      const id = (cb as HTMLInputElement).getAttribute("data-id")!;
+      if ((cb as HTMLInputElement).checked) {
+        selectedEntryIds.add(id);
+      } else {
+        selectedEntryIds.delete(id);
+      }
+      updateBatchButton();
     });
   });
 }
@@ -916,9 +957,48 @@ function bindEvents() {
     }
   });
 
+  // 批量爬图
+  $("btn-batch-cover").addEventListener("click", () => {
+    if (selectedEntryIds.size === 0) return;
+    batchItems = entries
+      .filter((e) => selectedEntryIds.has(e.id))
+      .map((e) => ({ id: e.id, name: e.name }));
+    batchActive = true;
+    batchIndex = 0;
+    showCoverSourceModal(true);
+  });
+
+  // 批量快捷操作
+  $("btn-cover-first").addEventListener("click", () => {
+    if (batchCurrentCandidates.length === 0) {
+      showToast("没有可用候选图", "error");
+      return;
+    }
+    if (batchCurrentItem) {
+      downloadAndAddCoverBatch(batchCurrentItem, batchCurrentCandidates[0]);
+    }
+  });
+
+  $("btn-cover-skip").addEventListener("click", () => {
+    if (batchResolve) {
+      const r = batchResolve;
+      batchResolve = null;
+      r();
+    }
+  });
+
+  $("btn-cover-skip-all").addEventListener("click", () => {
+    batchActive = false;
+    if (batchResolve) {
+      const r = batchResolve;
+      batchResolve = null;
+      r();
+    }
+  });
+
   // 联网搜索封面
   $("btn-fetch-cover").addEventListener("click", () => {
-    showCoverSourceModal();
+    showCoverSourceModal(false);
   });
 
   // 数据源使用方式筛选
@@ -1068,18 +1148,20 @@ const SOURCE_DESCRIPTIONS: Record<string, string> = {
 
 let coverSources: api.CoverSource[] = [];
 
-async function showCoverSourceModal() {
-  const name = $<HTMLInputElement>("entry-name").value.trim();
-  if (!name) {
-    showToast("请先填写作品名称", "error");
-    return;
+async function showCoverSourceModal(batch = false) {
+  if (!batch) {
+    const name = $<HTMLInputElement>("entry-name").value.trim();
+    if (!name) {
+      showToast("请先填写作品名称", "error");
+      return;
+    }
   }
 
   try {
     if (coverSources.length === 0) {
       coverSources = await api.getCoverSources();
     }
-    renderCoverSourceList();
+    renderCoverSourceList(batch);
     openModal("modal-cover-source");
   } catch (err) {
     console.error("Failed to load cover sources:", err);
@@ -1087,7 +1169,7 @@ async function showCoverSourceModal() {
   }
 }
 
-function renderCoverSourceList() {
+function renderCoverSourceList(batch = false) {
   const usage = $<HTMLSelectElement>("cover-usage-filter").value;
   const filtered = usage === "all" ? coverSources : coverSources.filter((s) => s.usage === usage);
 
@@ -1117,9 +1199,98 @@ function renderCoverSourceList() {
       const source = coverSources.find((s) => s.id === id);
       if (!source) return;
       closeModal("modal-cover-source");
-      fetchAndShowCandidates(id, source.name);
+      if (batch) {
+        batchSourceId = id;
+        batchSourceName = source.name;
+        processBatchQueue();
+      } else {
+        fetchAndShowCandidates(id, source.name);
+      }
     });
   });
+}
+
+// ============================================================================
+// 批量爬取
+// ============================================================================
+
+function updateBatchButton() {
+  const btn = $<HTMLButtonElement>("btn-batch-cover");
+  btn.disabled = selectedEntryIds.size === 0;
+  btn.title = selectedEntryIds.size > 0 ? `批量爬图（${selectedEntryIds.size} 条）` : "批量爬图";
+}
+
+/// 依次处理批量队列中的条目；用户每完成一条的选择后继续下一条
+async function processBatchQueue() {
+  $("btn-cover-change-source").classList.add("hidden");
+  $("btn-cover-first").classList.remove("hidden");
+  $("btn-cover-skip").classList.remove("hidden");
+  $("btn-cover-skip-all").classList.remove("hidden");
+
+  while (batchIndex < batchItems.length && batchActive) {
+    const item = batchItems[batchIndex];
+    batchIndex++;
+    batchCurrentItem = item;
+    batchCurrentCandidates = [];
+
+    const infoEl = $("cover-search-info");
+    infoEl.textContent = `（${batchIndex}/${batchItems.length}）${item.name} · ${batchSourceName}`;
+    const grid = $("cover-candidates");
+    grid.innerHTML = `<div class="cover-empty">🔍 正在搜索《${item.name}》的封面...</div>`;
+    openModal("modal-cover-pick");
+
+    try {
+      const candidates = await api.fetchCoverCandidates(item.name, null, batchSourceId);
+      batchCurrentCandidates = candidates;
+      renderCoverCandidates(candidates, batchSourceName);
+    } catch (err) {
+      console.error("Batch fetch failed:", item.name, err);
+      grid.innerHTML = `<div class="cover-empty">搜索失败：${(err as Error).message}</div>`;
+    }
+
+    // 等待用户操作（点图 / 使用第一张 / 跳过 / 全部跳过 / 关闭）
+    await new Promise<void>((resolve) => {
+      batchResolve = resolve;
+    });
+    batchResolve = null;
+  }
+
+  // 批量结束
+  batchActive = false;
+  batchCurrentItem = null;
+  batchCurrentCandidates = [];
+  $("btn-cover-change-source").classList.remove("hidden");
+  $("btn-cover-first").classList.add("hidden");
+  $("btn-cover-skip").classList.add("hidden");
+  $("btn-cover-skip-all").classList.add("hidden");
+  closeModal("modal-cover-pick");
+  selectedEntryIds.clear();
+  updateBatchButton();
+  showToast("批量爬图完成");
+  loadEntries();
+}
+
+/// 批量下载封面并关联到条目（首图设为主图）
+async function downloadAndAddCoverBatch(
+  item: { id: string; name: string },
+  candidate: api.CoverCandidate
+) {
+  showToast(`正在下载《${item.name}》封面...`);
+  try {
+    const localPath = await api.downloadCover(candidate.url, item.name, null);
+    const entry = await api.getEntry(item.id);
+    const isPrimary = entry.images.length === 0;
+    await api.addEntryImage(item.id, localPath, isPrimary);
+    showToast(`《${item.name}》封面已添加`);
+  } catch (err) {
+    console.error("Batch download failed:", item.name, err);
+    showToast(`《${item.name}》封面下载失败: ${(err as Error).message}`, "error");
+  }
+  if (batchResolve) {
+    const r = batchResolve;
+    batchResolve = null;
+    r();
+  }
 }
 
 async function fetchAndShowCandidates(sourceId: string, sourceName: string) {
@@ -1184,7 +1355,12 @@ function renderCoverCandidates(candidates: api.CoverCandidate[], sourceName: str
     cell.addEventListener("click", () => {
       const idx = parseInt(cell.getAttribute("data-idx")!, 10);
       const candidate = candidates[idx];
-      if (candidate) downloadAndAddCover(candidate);
+      if (!candidate) return;
+      if (batchActive && batchCurrentItem) {
+        downloadAndAddCoverBatch(batchCurrentItem, candidate);
+      } else {
+        downloadAndAddCover(candidate);
+      }
     });
   });
 }
@@ -1258,6 +1434,7 @@ async function init() {
   await loadTagFilter();
   await loadYearFilter();
   await loadEntries();
+  updateBatchButton();
 }
 
 if (document.readyState === "loading") {

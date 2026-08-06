@@ -427,12 +427,24 @@ input, select, textarea {
 }
 
 .entry-card {
+  position: relative;
   background: var(--bg-secondary);
   border-radius: 8px;
   overflow: hidden;
   box-shadow: var(--shadow);
   transition: all 0.2s;
   cursor: pointer;
+}
+
+.entry-select {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent, #4a9eff);
 }
 
 .entry-card:hover {
