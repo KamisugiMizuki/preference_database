@@ -1869,10 +1869,19 @@ fn get_stats(query: Option<SearchQuery>) -> Result<Stats, String> {
     };
 
     let year_dist: Vec<(String, i64)> = {
+        // 品鉴日期过滤条件与筛选条件合并（避免出现两个 WHERE）
+        let year_where = if where_sql.is_empty() {
+            " WHERE e.tasting_date IS NOT NULL AND e.tasting_date != ''".to_string()
+        } else {
+            format!(
+                "{} AND e.tasting_date IS NOT NULL AND e.tasting_date != ''",
+                where_sql
+            )
+        };
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT strftime('%Y', e.tasting_date), COUNT(DISTINCT e.id) FROM entries e JOIN genres g ON e.genre_id = g.id{} WHERE e.tasting_date IS NOT NULL AND e.tasting_date != '' GROUP BY 1 ORDER BY 1",
-                where_sql
+                "SELECT strftime('%Y', e.tasting_date), COUNT(DISTINCT e.id) FROM entries e JOIN genres g ON e.genre_id = g.id{} GROUP BY 1 ORDER BY 1",
+                year_where
             ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
