@@ -1,4 +1,5 @@
 import "./styles.css";
+import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
 import type {
   Genre,
@@ -620,36 +621,29 @@ function bindEvents() {
     });
   });
 
-  // 添加图片（手动输入路径）
+  // 添加图片（原生文件对话框选择，复制到 cover_image 目录）
   $("btn-add-image").addEventListener("click", async () => {
-    const path = prompt("请输入图片路径：");
-    if (path) {
-      const container = $<HTMLDivElement>("images-container");
-      const div = document.createElement("div");
-      div.className = "image-item";
-      div.setAttribute("data-path", path);
-      
-      try {
-        const base64 = await api.getImageBase64(path);
-        const ext = path.split(".").pop()?.toLowerCase() || "jpg";
-        const imgSrc = `data:image/${ext};base64,${base64}`;
-        div.innerHTML = `
-          <img src="${imgSrc}" />
-          <button type="button" class="remove-btn">×</button>
-        `;
-      } catch (err) {
-        console.error("[DEBUG] Failed to load local image:", path, err);
-        div.innerHTML = `
-          <div class="image-placeholder">无法加载图片</div>
-          <button type="button" class="remove-btn">×</button>
-        `;
-      }
-      
-      container.appendChild(div);
+    const selected = await open({
+      multiple: false,
+      title: "选择图片",
+      directory: false,
+      filters: [
+        { name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] },
+      ],
+    });
+    if (!selected || typeof selected !== "string") return;
 
-      div.querySelector(".remove-btn")?.addEventListener("click", () => {
-        div.remove();
-      });
+    const title = $<HTMLInputElement>("entry-name").value.trim() || "未命名";
+    const creator = $<HTMLInputElement>("entry-creator").value.trim() || null;
+
+    showToast("正在导入图片...");
+    try {
+      const newPath = await api.importLocalImage(selected, title, creator);
+      await addImageToContainer(newPath);
+      showToast("图片已导入");
+    } catch (err) {
+      console.error("Import image failed:", err);
+      showToast("导入失败: " + (err as Error).message, "error");
     }
   });
 
