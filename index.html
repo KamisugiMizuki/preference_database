@@ -209,10 +209,12 @@
             <select id="export-format">
               <option value="json">JSON</option>
               <option value="csv">CSV</option>
+              <option value="markdown">Markdown</option>
+              <option value="html">HTML（含图片）</option>
             </select>
           </div>
           <div class="form-row">
-            <label><input type="checkbox" id="export-images" /> 包含图片路径</label>
+            <label><input type="checkbox" id="export-images" /> 包含图片（HTML 始终包含；Markdown 以 Base64 嵌入，可自行转 PDF）</label>
           </div>
           <div class="form-actions">
             <button type="button" class="secondary-btn" data-modal="modal-export">取消</button>

@@ -919,7 +919,9 @@ fn export_entries(ids: Option<Vec<String>>, format: String, include_images: bool
             .collect();
         drop(stmt);
 
-        let images: Vec<String> = if include_images {
+        // HTML 格式始终包含图片；其余格式由 include_images 决定
+        let with_images = include_images || format.as_str() == "html";
+        let images: Vec<String> = if with_images {
             let mut stmt = conn
                 .prepare("SELECT path FROM entry_images WHERE entry_id = ?")
                 .map_err(|e| e.to_string())?;
@@ -964,6 +966,105 @@ fn export_entries(ids: Option<Vec<String>>, format: String, include_images: bool
             }
             csv
         }
+        "markdown" => {
+            let mut md = String::from("# 作品列表\n\n");
+            for entry in &export_entries {
+                md.push_str(&format!("## {}\n\n", entry.name));
+                // 图片（勾选包含图片时以 Base64 data URI 嵌入，文件自包含）
+                if include_images {
+                    for img_path in &entry.images {
+                        if let Ok(bytes) = std::fs::read(resolve_image_path(img_path)) {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                            let ext = std::path::Path::new(img_path)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("jpg")
+                                .to_lowercase();
+                            md.push_str(&format!(
+                                "![{}](data:image/{};base64,{})\n\n",
+                                entry.name, ext, b64
+                            ));
+                        }
+                    }
+                }
+                md.push_str(&format!("- 类型：{}\n", entry.genre_name));
+                md.push_str(&format!(
+                    "- 创作者：{}\n",
+                    entry.creator.as_deref().unwrap_or("")
+                ));
+                md.push_str(&format!("- 等级：**{}**\n", entry.rating));
+                md.push_str(&format!(
+                    "- 品鉴日期：{}\n",
+                    entry.tasting_date.as_deref().unwrap_or("")
+                ));
+                if !entry.tags.is_empty() {
+                    md.push_str(&format!("- 标签：{}\n", entry.tags.join("、")));
+                }
+                if !entry.links.is_empty() {
+                    md.push_str("- 链接：\n");
+                    for l in &entry.links {
+                        md.push_str(&format!("  - [{}]({})\n", l.label, l.url));
+                    }
+                }
+                md.push_str("\n### 评价\n\n");
+                md.push_str(&entry.review);
+                md.push_str("\n\n---\n\n");
+            }
+            md
+        }
+        "html" => {
+            let mut html = String::from(
+                "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n\
+                 <title>作品列表</title>\n<style>\n\
+                 body { font-family: \"Microsoft YaHei\", sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }\n\
+                 .entry { border-bottom: 1px solid #ddd; padding: 16px 0; }\n\
+                 .meta { color: #666; }\n\
+                 .rating { font-weight: bold; color: #c0392b; }\n\
+                 .images img { max-width: 240px; max-height: 340px; margin: 4px; border-radius: 4px; }\n\
+                 .review { white-space: pre-wrap; line-height: 1.6; }\n\
+                 </style>\n</head>\n<body>\n<h1>作品列表</h1>\n",
+            );
+            for entry in &export_entries {
+                html.push_str(&format!("<div class=\"entry\"><h2>{}</h2>\n", escape_html(&entry.name)));
+                html.push_str(&format!(
+                    "<p class=\"meta\">{} · <span class=\"rating\">{}</span> · {}{}</p>\n",
+                    escape_html(&entry.genre_name),
+                    escape_html(&entry.rating),
+                    escape_html(entry.tasting_date.as_deref().unwrap_or("")),
+                    entry.creator.as_deref().map(|c| format!(" · {}", escape_html(c))).unwrap_or_default()
+                ));
+                if !entry.tags.is_empty() {
+                    html.push_str(&format!(
+                        "<p class=\"meta\">标签：{}</p>\n",
+                        entry.tags.iter().map(|t| escape_html(t)).collect::<Vec<_>>().join("、")
+                    ));
+                }
+                // 图片：Base64 嵌入
+                html.push_str("<div class=\"images\">");
+                for img_path in &entry.images {
+                    if let Ok(bytes) = std::fs::read(resolve_image_path(img_path)) {
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        let ext = std::path::Path::new(img_path)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("jpg")
+                            .to_lowercase();
+                        html.push_str(&format!(
+                            "<img src=\"data:image/{};base64,{}\" alt=\"\">\n",
+                            ext, b64
+                        ));
+                    }
+                }
+                html.push_str("</div>\n");
+                html.push_str(&format!(
+                    "<div class=\"review\">{}</div>\n</div>\n",
+                    escape_html(&entry.review)
+                ));
+            }
+            html.push_str("</body>\n</html>\n");
+            html
+        }
+        "pdf" => return Err("PDF 导出未内置，请使用 Markdown（含图）自行转换".to_string()),
         _ => return Err("不支持的格式".to_string()),
     };
 
@@ -976,6 +1077,14 @@ fn export_entries(ids: Option<Vec<String>>, format: String, include_images: bool
     std::fs::write(&export_path, &content).map_err(|e| e.to_string())?;
 
     Ok(export_path.to_string_lossy().to_string())
+}
+
+/// HTML 转义（导出 HTML 时防注入/防格式破坏）
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 // ============================================================================
