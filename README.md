@@ -93,17 +93,33 @@ Bangumi 搜索对**未登录或无权限**账号隐藏全部 R18 内容。默认
 
 ```
 preference_database/
-├── src/                  # 前端（TS + CSS）
-│   ├── main.ts           # 界面逻辑与状态管理
-│   ├── api.ts            # Tauri invoke 封装
-│   ├── types.ts          # 数据类型定义
-│   └── styles.css        # 样式（含暗色模式）
-├── src-tauri/            # Rust 后端
-│   └── src/lib.rs        # 数据库、命令、封面爬取实现（单文件）
-├── database/             # SQLite 数据库（本地，不入库）
-├── backups/              # 数据库备份（本地，不入库）
-├── exports/              # 导出文件（本地，不入库）
-└── resource/cover_image/ # 封面图片（本地，不入库）
+├── index.html              # 页面骨架（工具栏、列表区、模态框）
+├── vite.config.ts          # Vite 配置（dev 端口 5173，绑定 127.0.0.1）
+├── tsconfig.json           # TypeScript 配置
+├── package.json            # 前端依赖与脚本
+├── start.bat               # Windows 一键启动开发模式
+├── claude.md               # 项目需求规格说明
+├── src/                    # 前端（TS + CSS）
+│   ├── main.ts             # 界面逻辑与状态管理
+│   ├── api.ts              # Tauri invoke 封装
+│   ├── types.ts            # 数据类型定义
+│   ├── styles.css          # 样式（含暗色模式）
+│   └── assets/             # 静态资源（图标）
+├── src-tauri/              # Rust 后端
+│   ├── Cargo.toml          # 依赖（tauri/rusqlite/reqwest/scraper 等）
+│   ├── tauri.conf.json     # Tauri 配置（窗口、devUrl、打包）
+│   ├── build.rs
+│   ├── capabilities/
+│   │   └── default.json    # 权限声明（dialog/opener）
+│   ├── icons/              # 应用图标（各平台尺寸）
+│   └── src/
+│       ├── main.rs         # 程序入口
+│       └── lib.rs          # 数据库、命令、封面爬取、测试（单文件）
+├── config/                 # 本地配置（含 README 说明；Cookie 等凭证不入库）
+├── database/               # SQLite 数据库（本地，不入库）
+├── backups/                # 数据库备份（本地，不入库）
+├── exports/                # 导出文件（本地，不入库）
+└── resource/cover_image/   # 封面图片（本地，不入库）
 ```
 
 ## 规划中
