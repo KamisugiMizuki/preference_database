@@ -492,8 +492,12 @@ async function generateShareCard(entry: Entry): Promise<string> {
   canvas.height = H;
   const ctx = canvas.getContext("2d")!;
 
-  // 背景
-  ctx.fillStyle = "#181825";
+  // 背景（主 UI 暗色主题：海军蓝三阶渐变）
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, "#1a1a2e");
+  bgGrad.addColorStop(0.55, "#16213e");
+  bgGrad.addColorStop(1, "#0f3460");
+  ctx.fillStyle = bgGrad;
   ctx.fillRect(0, 0, W, H);
 
   // 封面（顶部全宽，底部渐变融入背景）
@@ -501,35 +505,45 @@ async function generateShareCard(entry: Entry): Promise<string> {
   const primary = entry.images.find((i) => i.is_primary) || entry.images[0];
   if (primary) {
     try {
-      const b64 = await api.getImageBase64(primary.path);
-      const ext = primary.path.split(".").pop()?.toLowerCase() || "jpg";
-      const img = new Image();
-      await new Promise<void>((resolve, reject) => {
-        img.onload = () => resolve();
-        img.onerror = () => reject(new Error("封面加载失败"));
-        img.src = `data:image/${ext};base64,${b64}`;
-      });
-      const coverH = Math.min(400, H * 0.45);
-      const scale = Math.max(W / img.width, coverH / img.height);
-      const dw = img.width * scale;
-      const dh = img.height * scale;
-      ctx.drawImage(img, (W - dw) / 2, 0, dw, dh);
-      const grad = ctx.createLinearGradient(0, coverH - 120, 0, coverH);
-      grad.addColorStop(0, "rgba(24,24,37,0)");
-      grad.addColorStop(1, "rgba(24,24,37,1)");
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, coverH - 120, W, 120);
-      hasCover = true;
+      const dataUrl = await cachedImageBase64(primary.path);
+      if (dataUrl) {
+        const img = new Image();
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
+          img.onerror = () => reject(new Error("封面加载失败"));
+          img.src = dataUrl;
+        });
+        const coverH = Math.min(400, H * 0.45);
+        const scale = Math.max(W / img.width, coverH / img.height);
+        const dw = img.width * scale;
+        const dh = img.height * scale;
+        ctx.drawImage(img, (W - dw) / 2, 0, dw, dh);
+        const grad = ctx.createLinearGradient(0, coverH - 120, 0, coverH);
+        grad.addColorStop(0, "rgba(26,26,46,0)");
+        grad.addColorStop(1, "rgba(26,26,46,1)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, coverH - 120, W, 120);
+        hasCover = true;
+      }
     } catch {
       // 封面加载失败，走占位布局
     }
   }
 
-  // 标题
+  // 半透明文字底（主 UI 面板色 #16213e @ 70%，保证封面图上文字可读）
+  function drawTextPanel(y: number, h: number) {
+    ctx.fillStyle = "rgba(22,33,62,0.7)";
+    ctx.beginPath();
+    ctx.roundRect(24, y, W - 48, h, 12);
+    ctx.fill();
+  }
+
+  // 标题（带半透明底）
   const titleY = hasCover ? 456 : 80;
-  ctx.fillStyle = "#ffffff";
+  drawTextPanel(titleY - 44, 92);
+  ctx.fillStyle = "#e8e8e8";
   ctx.font = "bold 34px 'Microsoft YaHei', sans-serif";
-  drawWrappedText(ctx, entry.name, 32, titleY, W - 64, 44, 2);
+  drawWrappedText(ctx, entry.name, 48, titleY, W - 96, 44, 2);
 
   // 等级徽章（与主 UI rating-badge 一致的彩色圆角底 + 白字）
   const ratingColors: Record<string, string> = {
@@ -542,24 +556,25 @@ async function generateShareCard(entry: Entry): Promise<string> {
   ctx.font = "bold 22px 'Microsoft YaHei', sans-serif";
   ctx.fillStyle = ratingColor;
   ctx.beginPath();
-  ctx.roundRect(32, titleY + 24, 44, 34, 8);
+  ctx.roundRect(48, titleY + 26, 44, 34, 8);
   ctx.fill();
   ctx.fillStyle = "#ffffff";
-  ctx.fillText(entry.rating, 42, titleY + 51);
+  ctx.fillText(entry.rating, 58, titleY + 53);
   const genreName = genres.find((g) => g.id === entry.genre_id)?.name || "";
   const metaText = `${genreName}${entry.creator ? " · " + entry.creator : ""}${
     entry.tasting_date ? " · " + formatDate(entry.tasting_date) : ""
   }`.slice(0, 40); // 超长截断，避免溢出画布
-  ctx.fillStyle = "#a6adc8";
+  ctx.fillStyle = "#a0a0a0";
   ctx.font = "16px 'Microsoft YaHei', sans-serif";
-  ctx.fillText(metaText, 92, titleY + 54);
+  ctx.fillText(metaText, 108, titleY + 56);
 
-  // 评价（最多 8 行，避免压到标签区）
-  ctx.fillStyle = "#cdd6f4";
+  // 评价（带半透明底，最多 8 行，避免压到标签区）
+  drawTextPanel(titleY + 76, 234);
+  ctx.fillStyle = "#e8e8e8";
   ctx.font = "16px 'Microsoft YaHei', sans-serif";
-  drawWrappedText(ctx, entry.review, 32, titleY + 104, W - 64, 28, 8);
+  drawWrappedText(ctx, entry.review, 48, titleY + 102, W - 96, 28, 8);
 
-  // 标签（圆角胶囊）
+  // 标签（圆角胶囊，主 UI 强调色底）
   if (entry.tags.length > 0) {
     const tagY = H - 78;
     ctx.font = "14px 'Microsoft YaHei', sans-serif";
@@ -567,18 +582,18 @@ async function generateShareCard(entry: Entry): Promise<string> {
     for (const tag of entry.tags.slice(0, 6)) {
       const tw = ctx.measureText(tag).width + 24;
       if (tx + tw > W - 32) break;
-      ctx.fillStyle = "#313244";
+      ctx.fillStyle = "rgba(15,52,96,0.85)";
       ctx.beginPath();
       ctx.roundRect(tx, tagY - 18, tw, 26, 13);
       ctx.fill();
-      ctx.fillStyle = "#cdd6f4";
+      ctx.fillStyle = "#e8e8e8";
       ctx.fillText(tag, tx + 12, tagY);
       tx += tw + 8;
     }
   }
 
   // 水印
-  ctx.fillStyle = "#6c7086";
+  ctx.fillStyle = "#666666";
   ctx.font = "13px 'Microsoft YaHei', sans-serif";
   ctx.fillText("文艺作品品鉴 · Preference Database", 32, H - 26);
 
