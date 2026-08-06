@@ -721,6 +721,41 @@ fn get_entries_count() -> Result<i64, String> {
     Ok(count)
 }
 
+/// 所有条目的去重标签列表（用于筛选）
+#[tauri::command]
+fn get_all_tags() -> Result<Vec<String>, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT name FROM tags ORDER BY name")
+        .map_err(|e| e.to_string())?;
+    let tags = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(tags)
+}
+
+/// 所有条目的品鉴年份列表（降序，用于筛选）
+#[tauri::command]
+fn get_tasting_years() -> Result<Vec<i32>, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT CAST(strftime('%Y', tasting_date) AS INTEGER) AS y
+             FROM entries
+             WHERE tasting_date IS NOT NULL AND tasting_date != ''
+             ORDER BY y DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let years = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<i32>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(years)
+}
+
 // ============================================================================
 // 图片管理命令
 // ============================================================================
@@ -1671,6 +1706,8 @@ pub fn run() {
             update_entry,
             delete_entries,
             get_entries_count,
+            get_all_tags,
+            get_tasting_years,
             // 图片管理
             add_entry_image,
             delete_entry_image,

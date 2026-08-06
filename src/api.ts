@@ -46,6 +46,14 @@ export async function getEntriesCount(): Promise<number> {
   return invoke("get_entries_count");
 }
 
+export async function getTags(): Promise<string[]> {
+  return invoke("get_all_tags");
+}
+
+export async function getTastingYears(): Promise<number[]> {
+  return invoke("get_tasting_years");
+}
+
 export async function addEntryImage(
   entryId: string,
   path: string,

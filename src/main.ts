@@ -19,6 +19,8 @@ let originalImageIds: string[] = [];
 let confirmAction: (() => void) | null = null;
 let selectedGenreIds: string[] = [];
 let selectedRatings: string[] = ["S", "A", "B", "C"];
+let selectedTags: string[] = [];
+let selectedYear: number | null = null;
 let currentSearchQuery: api.SearchQuery = {
   keyword: null,
   search_field: null,
@@ -284,6 +286,66 @@ async function loadGenres() {
   }
 }
 
+function renderTagFilter(tags: string[]) {
+  const el = $<HTMLDivElement>("tag-filter");
+  if (tags.length === 0) {
+    el.innerHTML = `<div class="filter-empty">暂无标签</div>`;
+    return;
+  }
+  el.innerHTML = tags
+    .map(
+      (t, i) => `
+    <div class="filter-item">
+      <input type="checkbox" id="tag-chk-${i}" data-idx="${i}" ${
+        selectedTags.includes(t) ? "checked" : ""
+      } />
+      <label for="tag-chk-${i}">${t}</label>
+    </div>
+  `
+    )
+    .join("");
+
+  el.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const idx = parseInt((cb as HTMLInputElement).getAttribute("data-idx")!, 10);
+      const tag = tags[idx];
+      if ((cb as HTMLInputElement).checked) {
+        if (!selectedTags.includes(tag)) selectedTags.push(tag);
+      } else {
+        selectedTags = selectedTags.filter((x) => x !== tag);
+      }
+      loadEntries();
+    });
+  });
+}
+
+function renderYearFilter(years: number[]) {
+  const el = $<HTMLSelectElement>("year-filter");
+  el.innerHTML =
+    `<option value="">全部年份</option>` +
+    years
+      .map(
+        (y) => `<option value="${y}" ${selectedYear === y ? "selected" : ""}>${y}</option>`
+      )
+      .join("");
+}
+
+async function loadTagFilter() {
+  try {
+    renderTagFilter(await api.getTags());
+  } catch (err) {
+    console.error("Failed to load tags:", err);
+  }
+}
+
+async function loadYearFilter() {
+  try {
+    renderYearFilter(await api.getTastingYears());
+  } catch (err) {
+    console.error("Failed to load years:", err);
+  }
+}
+
 async function loadEntries() {
   const loadingEl = $<HTMLDivElement>("loading");
   const entryListEl = $<HTMLDivElement>("entry-list");
@@ -296,6 +358,8 @@ async function loadEntries() {
   try {
     currentSearchQuery.genre_ids = selectedGenreIds;
     currentSearchQuery.ratings = selectedRatings;
+    currentSearchQuery.tag_filter = selectedTags;
+    currentSearchQuery.year = selectedYear;
 
     entries = await api.getEntries(currentSearchQuery);
     await renderEntries();
@@ -597,6 +661,13 @@ function bindEvents() {
       );
       loadEntries();
     });
+  });
+
+  // 品鉴年份筛选
+  $("year-filter").addEventListener("change", () => {
+    const v = $<HTMLSelectElement>("year-filter").value;
+    selectedYear = v ? parseInt(v, 10) : null;
+    loadEntries();
   });
 
   // 视图切换
@@ -1020,6 +1091,8 @@ async function init() {
 
   bindEvents();
   await loadGenres();
+  await loadTagFilter();
+  await loadYearFilter();
   await loadEntries();
 }
 
