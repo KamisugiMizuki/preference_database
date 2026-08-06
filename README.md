@@ -24,7 +24,7 @@
 - Bangumi 源支持本地 Cookie 配置（R18 内容随账号权限，见下文）
 
 ### 数据管理
-- 导出 JSON / CSV / Markdown / HTML（HTML 固定嵌入图片，Markdown 可选 Base64 嵌入）
+- 导出 JSON / CSV / Markdown / HTML（HTML 固定嵌入图片；Markdown 可选包含图片，图片复制到导出目录以相对路径引用，不会撑大 .md 文件）
 - 导入 JSON / CSV（类型缺失自动创建，逐条校验并统计）
 - 手动备份 / 恢复数据库（恢复前自动备份当前库）
 - 关闭程序时自动备份

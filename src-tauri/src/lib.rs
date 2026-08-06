@@ -988,6 +988,10 @@ fn export_entries(
         });
     }
 
+    let project_root = get_project_root();
+    let export_dir = project_root.join("exports");
+    std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
+
     let content = match format.as_str() {
         "json" => serde_json::to_string_pretty(&export_entries).map_err(|e| e.to_string())?,
         "csv" => {
@@ -1008,22 +1012,25 @@ fn export_entries(
         }
         "markdown" => {
             let mut md = String::from("# 作品列表\n\n");
+            // 勾选包含图片时：把图片复制到导出目录（与 .md 同目录），md 用相对路径引用。
+            // 不使用 Base64 嵌入——图片多了会导致 .md 文件过大、编辑器无法正常显示。
+            let mut cover_counter = 0u32;
             for entry in &export_entries {
                 md.push_str(&format!("## {}\n\n", entry.name));
-                // 图片（勾选包含图片时以 Base64 data URI 嵌入，文件自包含）
                 if include_images {
                     for img_path in &entry.images {
-                        if let Ok(bytes) = std::fs::read(resolve_image_path(img_path)) {
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        let src = resolve_image_path(img_path);
+                        if src.exists() {
+                            cover_counter += 1;
                             let ext = std::path::Path::new(img_path)
                                 .extension()
                                 .and_then(|e| e.to_str())
                                 .unwrap_or("jpg")
                                 .to_lowercase();
-                            md.push_str(&format!(
-                                "![{}](data:image/{};base64,{})\n\n",
-                                entry.name, ext, b64
-                            ));
+                            let fname = format!("cover_{}.{}", cover_counter, ext);
+                            if std::fs::copy(&src, export_dir.join(&fname)).is_ok() {
+                                md.push_str(&format!("![](./{})\n\n", fname));
+                            }
                         }
                     }
                 }
@@ -1108,12 +1115,10 @@ fn export_entries(
         _ => return Err("不支持的格式".to_string()),
     };
 
-    let project_root = get_project_root();
-    let export_dir = project_root.join("exports");
-    std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
-
+    // 保存文件（markdown 用 .md 后缀）
+    let ext = if format.as_str() == "markdown" { "md" } else { format.as_str() };
     let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
-    let export_path = export_dir.join(format!("export_{}.{}", timestamp, format));
+    let export_path = export_dir.join(format!("export_{}.{}", timestamp, ext));
     std::fs::write(&export_path, &content).map_err(|e| e.to_string())?;
 
     Ok(export_path.to_string_lossy().to_string())
