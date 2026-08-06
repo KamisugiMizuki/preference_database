@@ -911,12 +911,6 @@ fn get_cover_sources() -> Vec<CoverSource> {
             source_type: "douban".to_string(),
             usage: "movie".to_string(),
         },
-        CoverSource {
-            id: "tmdb_movie".to_string(),
-            name: "TMDB（影视）".to_string(),
-            source_type: "tmdb".to_string(),
-            usage: "movie".to_string(),
-        },
         // 动漫
         CoverSource {
             id: "bangumi_anime".to_string(),
@@ -973,7 +967,6 @@ fn fetch_cover_candidates(
         "bing_general" => fetch_bing(&client, &title, creator.as_deref()),
         "douban_movie" => fetch_douban(&client, &title, "movie"),
         "douban_book" => fetch_douban(&client, &title, "book"),
-        "tmdb_movie" => fetch_tmdb_search(&client, &title, creator.as_deref()),
         "bangumi_anime" => fetch_bangumi(&client, &title, creator.as_deref()),
         "anilist_anime" => fetch_anilist(&client, &title, creator.as_deref()),
         "itunes_music" => fetch_itunes(&client, &title, creator.as_deref()),
@@ -1120,50 +1113,6 @@ fn fetch_douban(
                     height: None,
                 });
             }
-        }
-    }
-    Ok(results)
-}
-
-fn fetch_tmdb_search(
-    client: &reqwest::blocking::Client,
-    title: &str,
-    _creator: Option<&str>,
-) -> Result<Vec<CoverCandidate>, String> {
-    // TMDB 需要 API key，这里采用无 key 的图片代理搜索
-    // 简化实现：使用 imdb 搜索替代
-    let url = format!(
-        "https://www.imdb.com/find/?q={}&s=tt",
-        urlencoding::encode(title)
-    );
-    let html = client
-        .get(&url)
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .send()
-        .map_err(|e| format!("请求失败: {}", e))?
-        .text()
-        .map_err(|e| format!("读取失败: {}", e))?;
-
-    let document = scraper::Html::parse_document(&html);
-    let img_sel = scraper::Selector::parse("img.ipc-image").unwrap();
-
-    let mut results = Vec::new();
-    for el in document.select(&img_sel).take(15) {
-        if let Some(src) = el.value().attr("src") {
-            // IMDB 缩略图 base64 编码时跳过
-            if src.starts_with("data:") {
-                continue;
-            }
-            // 把小图 URL 替换为较高分辨率
-            let hi = src.replace("._V1_", "._V1_QL75_");
-            results.push(CoverCandidate {
-                url: hi.clone(),
-                thumbnail_url: Some(src.to_string()),
-                title: None,
-                source: "tmdb_movie".to_string(),
-                width: None,
-                height: None,
-            });
         }
     }
     Ok(results)

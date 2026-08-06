@@ -788,7 +788,6 @@ const USAGE_LABELS: Record<string, string> = {
 const SOURCE_DESCRIPTIONS: Record<string, string> = {
   bing_general: "Bing 图片搜索，适合没有特定数据源时使用",
   douban_movie: "豆瓣电影，电影/电视剧封面",
-  tmdb_movie: "IMDB 图片搜索（TMDB 无 key 时替代）",
   bangumi_anime: "Bangumi 番组计划，动画番剧封面",
   anilist_anime: "AniList，动画番剧封面",
   douban_book: "豆瓣读书，图书封面",
