@@ -70,7 +70,6 @@ npm run build && npm run tauri build
   - `backups/` — 数据库备份
   - `exports/` — 导出文件
   - `resource/cover_image/` — 本地封面图片
-  - `待玩列表.md` — 个人待玩/待读清单
 - 建议定期点击界面右上角 💾 备份数据库，并复制到外部存储
 
 ## 项目结构
