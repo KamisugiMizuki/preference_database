@@ -17,6 +17,8 @@ let entries: api.EntrySummary[] = [];
 let totalCount = 0;
 let currentEntry: Entry | null = null;
 let originalImageIds: string[] = [];
+// 编辑表单脏标记（未保存修改保护）
+let formDirty = false;
 // 通用确认回调：删除条目 / 恢复数据库共用（null 时确认按钮走默认删除逻辑）
 let confirmAction: (() => void) | null = null;
 let selectedGenreIds: string[] = [];
@@ -74,6 +76,21 @@ function openModal(id: string) {
 }
 
 function closeModal(id: string) {
+  // 编辑弹窗有未保存修改时，先弹确认（嵌套 modal-confirm），确认后才关闭
+  if (id === "modal-entry" && formDirty) {
+    $("confirm-title").textContent = "放弃未保存的修改？";
+    $("btn-confirm-delete").textContent = "放弃修改";
+    $("btn-confirm-delete").className = "warning-btn";
+    $("confirm-message").textContent =
+      "表单有未保存的修改，关闭后将丢失。确定放弃吗？";
+    confirmAction = () => {
+      formDirty = false;
+      closeModal("modal-entry");
+    };
+    openModal("modal-confirm");
+    return;
+  }
+
   $(id).classList.add("hidden");
   // 批量爬图中关闭选择弹窗 → 终止批量
   if (id === "modal-cover-pick" && batchResolve) {
@@ -156,6 +173,14 @@ function hasActiveFilter(): boolean {
   );
 }
 
+/// 错误信息友好化：截断长度、隐藏本地路径，避免裸奔后端报错
+function formatError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  let msg = raw.replace(/[A-Za-z]:\\[^\s:)]+/g, "[本地路径]");
+  if (msg.length > 100) msg = msg.slice(0, 100) + "…";
+  return msg;
+}
+
 /// HTML 转义（所有用户内容插值必须经过此函数，防破版与注入）
 function escapeHtml(s: string): string {
   return s
@@ -179,25 +204,8 @@ function getGenreColor(name: string): string {
   return GENRE_COLORS[name] || "#868e96";
 }
 
-/// 加载一批条目的主图 base64
-async function loadEntryImages(list: api.EntrySummary[]): Promise<(string | null)[]> {
-  return Promise.all(
-    list.map(async (e) => {
-      if (!e.primary_image) return null;
-      try {
-        const base64 = await api.getImageBase64(e.primary_image);
-        const ext = e.primary_image.split(".").pop()?.toLowerCase() || "jpg";
-        return `data:image/${ext};base64,${base64}`;
-      } catch (err) {
-        console.error("Failed to load image:", e.primary_image, err);
-        return null;
-      }
-    })
-  );
-}
-
-/// 渲染一批条目卡片（append 时只追加不重绘）
-function renderEntryCards(list: api.EntrySummary[], images: (string | null)[], append = false) {
+/// 渲染一批条目卡片（append 时只追加不重绘；图片异步逐张填充，不阻塞渲染）
+function renderEntryCards(list: api.EntrySummary[], append = false) {
   const entryListEl = $<HTMLDivElement>("entry-list");
   const html = list
     .map(
@@ -206,13 +214,9 @@ function renderEntryCards(list: api.EntrySummary[], images: (string | null)[], a
       <input type="checkbox" class="entry-select" data-id="${e.id}" ${
         selectedEntryIds.has(e.id) ? "checked" : ""
       } />
-      ${
-        images[idx]
-          ? `<img class="entry-card-image" src="${images[idx]}" alt="${escapeHtml(e.name)}" />`
-          : `<div class="entry-card-placeholder" style="background:${getGenreColor(
-              e.genre_name
-            )}22;color:${getGenreColor(e.genre_name)}">${getGenreIcon(e.genre_name)}</div>`
-      }
+      <div class="entry-card-placeholder" data-idx="${idx}" style="background:${getGenreColor(
+        e.genre_name
+      )}22;color:${getGenreColor(e.genre_name)}">${getGenreIcon(e.genre_name)}</div>
       <div class="entry-card-content">
         <div class="entry-card-header">
           <span class="entry-card-title">${escapeHtml(e.name)}</span>
@@ -276,6 +280,26 @@ function renderEntryCards(list: api.EntrySummary[], images: (string | null)[], a
       updateBatchButton();
     });
   }
+
+  // 异步加载主图：逐张填充占位，不阻塞列表渲染
+  list.forEach(async (e, i) => {
+    if (!e.primary_image) return;
+    try {
+      const base64 = await api.getImageBase64(e.primary_image);
+      const ext = e.primary_image.split(".").pop()?.toLowerCase() || "jpg";
+      const dataUrl = `data:image/${ext};base64,${base64}`;
+      const card = cards[startIdx + i];
+      const placeholder = card?.querySelector<HTMLDivElement>(
+        `.entry-card-placeholder[data-idx="${i}"]`
+      );
+      if (placeholder) {
+        placeholder.innerHTML = `<img class="entry-card-image" src="${dataUrl}" alt="${escapeHtml(e.name)}" />`;
+      }
+    } catch (err) {
+      // 图片加载失败：保留类型色占位
+      console.error("Failed to load image:", e.primary_image, err);
+    }
+  });
 }
 
 async function renderEntries() {
@@ -299,13 +323,17 @@ async function renderEntries() {
 
   entryListEl.classList.remove("hidden");
   emptyStateEl.classList.add("hidden");
-  // 诚实计数：显示 X / 共 N 条
-  entryCountEl.textContent = `显示 ${entries.length} / 共 ${totalCount} 条作品`;
-  // 加载更多按钮
-  loadMoreWrapEl.classList.toggle("hidden", entries.length >= totalCount);
+  updateListMeta();
 
-  const images = await loadEntryImages(entries);
-  renderEntryCards(entries, images, false);
+  renderEntryCards(entries, false);
+}
+
+/// 更新列表计数与加载更多按钮（不重绘卡片）
+function updateListMeta() {
+  const entryCountEl = $<HTMLSpanElement>("entry-count");
+  const loadMoreWrapEl = $<HTMLDivElement>("load-more-wrap");
+  entryCountEl.textContent = `显示 ${entries.length} / 共 ${totalCount} 条作品`;
+  loadMoreWrapEl.classList.toggle("hidden", entries.length >= totalCount);
 }
 
 async function renderDetailModal(entry: Entry) {
@@ -611,9 +639,8 @@ async function loadEntries(append = false) {
 
     if (append) {
       entries = [...entries, ...newEntries];
-      const images = await loadEntryImages(newEntries);
-      renderEntryCards(newEntries, images, true);
-      renderEntries();
+      renderEntryCards(newEntries, true);
+      updateListMeta();
     } else {
       totalCount = count;
       entries = newEntries;
@@ -680,9 +707,11 @@ function resetEntryForm() {
   $<HTMLDivElement>("links-container").innerHTML = "";
   $<HTMLDivElement>("images-container").innerHTML = "";
   originalImageIds = [];
+  formDirty = false;
 }
 
 async function populateEntryForm(entry: Entry) {
+  formDirty = false;
   $<HTMLInputElement>("entry-id").value = entry.id;
   $<HTMLInputElement>("entry-name").value = entry.name;
   $<HTMLSelectElement>("entry-genre").value = entry.genre_id;
@@ -758,7 +787,7 @@ async function handleEntrySubmit(e: Event) {
     const tastingDate = $<HTMLInputElement>("entry-date").value || null;
     const tagsStr = $<HTMLInputElement>("entry-tags").value;
     const tags = tagsStr
-      ? tagsStr.split(",").map((t) => t.trim()).filter(Boolean)
+      ? tagsStr.split(/[,，]/).map((t) => t.trim()).filter(Boolean)
       : [];
 
   const linksContainer = $<HTMLDivElement>("links-container");
@@ -819,17 +848,17 @@ async function handleEntrySubmit(e: Event) {
       await api.addEntryImage(savedId, imagePaths[i], isPrimary);
     }
 
+    formDirty = false;
     closeModal("modal-entry");
     resetEntryForm();
     loadEntries();
   } catch (err) {
     console.error("Failed to save entry:", err);
-    showToast("保存失败: " + (err as Error).message, "error");
+    showToast("保存失败: " + formatError(err), "error");
   } finally {
     submitBtn.disabled = false;
   }
 }
-
 // ============================================================================
 // 事件绑定
 // ============================================================================
@@ -882,7 +911,7 @@ function bindEvents() {
       await api.saveBase64Image(dataUrl, savePath);
       showToast("分享卡片已保存");
     } catch (err) {
-      showToast("生成失败: " + (err as Error).message, "error");
+      showToast("生成失败: " + formatError(err), "error");
     }
   });
 
@@ -913,12 +942,20 @@ function bindEvents() {
       closeModal("modal-detail");
       loadEntries();
     } catch (err) {
-      showToast("删除失败: " + (err as Error).message, "error");
+      showToast("删除失败: " + formatError(err), "error");
     }
   });
 
   // 表单提交
   $("entry-form").addEventListener("submit", handleEntrySubmit);
+
+  // 表单变更标记（脏表单保护）
+  $("entry-form").addEventListener("input", () => {
+    formDirty = true;
+  });
+  $("entry-form").addEventListener("change", () => {
+    formDirty = true;
+  });
 
   // 模态框关闭 - 使用 data-modal 属性
   document.querySelectorAll("[data-modal]").forEach((el) => {
@@ -1053,7 +1090,7 @@ function bindEvents() {
       showToast("图片已导入");
     } catch (err) {
       console.error("Import image failed:", err);
-      showToast("导入失败: " + (err as Error).message, "error");
+      showToast("导入失败: " + formatError(err), "error");
     }
   });
 
@@ -1091,7 +1128,7 @@ function bindEvents() {
         showToast("图片已导入");
       } catch (err) {
         console.error("Import image failed:", err);
-        showToast("导入失败: " + (err as Error).message, "error");
+        showToast("导入失败: " + formatError(err), "error");
       }
     }
   });
@@ -1168,7 +1205,7 @@ function bindEvents() {
       $<HTMLInputElement>("genre-name").value = "";
       loadGenres();
     } catch (err) {
-      showToast("添加失败: " + (err as Error).message, "error");
+      showToast("添加失败: " + formatError(err), "error");
     }
   });
 
@@ -1208,7 +1245,7 @@ function bindEvents() {
       showToast("导出成功: " + filePath);
       closeModal("modal-export");
     } catch (err) {
-      showToast("导出失败: " + (err as Error).message, "error");
+      showToast("导出失败: " + formatError(err), "error");
     }
   });
 
@@ -1218,7 +1255,7 @@ function bindEvents() {
       const path = await api.backupDatabase();
       showToast(`备份成功: ${path}`);
     } catch (err) {
-      showToast("备份失败: " + (err as Error).message, "error");
+      showToast("备份失败: " + formatError(err), "error");
     }
   });
 
@@ -1246,7 +1283,7 @@ function bindEvents() {
         await loadYearFilter();
         await loadEntries();
       } catch (err) {
-        showToast("导入失败: " + (err as Error).message, "error");
+        showToast("导入失败: " + formatError(err), "error");
       }
     };
     openModal("modal-confirm");
@@ -1276,7 +1313,7 @@ function bindEvents() {
       await loadYearFilter();
       await loadEntries();
     } catch (err) {
-      showToast("导入失败: " + (err as Error).message, "error");
+      showToast("导入失败: " + formatError(err), "error");
     }
   });
 }
@@ -1324,7 +1361,7 @@ async function showCoverSourceModal(batch = false) {
     openModal("modal-cover-source");
   } catch (err) {
     console.error("Failed to load cover sources:", err);
-    showToast("加载数据源失败: " + (err as Error).message, "error");
+    showToast("加载数据源失败: " + formatError(err), "error");
   }
 }
 
@@ -1407,7 +1444,7 @@ async function processBatchQueue() {
       renderCoverCandidates(candidates, batchSourceName);
     } catch (err) {
       console.error("Batch fetch failed:", item.name, err);
-      grid.innerHTML = `<div class="cover-empty">搜索失败：${(err as Error).message}</div>`;
+      grid.innerHTML = `<div class="cover-empty">搜索失败：${formatError(err)}</div>`;
     }
 
     // 等待用户操作（点图 / 使用第一张 / 跳过 / 全部跳过 / 关闭）
@@ -1448,7 +1485,7 @@ async function downloadAndAddCoverBatch(
     showToast(`《${item.name}》封面已添加`);
   } catch (err) {
     console.error("Batch download failed:", item.name, err);
-    showToast(`《${item.name}》封面下载失败: ${(err as Error).message}`, "error");
+    showToast(`《${item.name}》封面下载失败: ${formatError(err)}`, "error");
   }
   if (batchResolve) {
     const r = batchResolve;
@@ -1473,7 +1510,7 @@ async function fetchAndShowCandidates(sourceId: string, sourceName: string) {
     renderCoverCandidates(candidates, sourceName);
   } catch (err) {
     console.error("Fetch cover candidates failed:", err);
-    grid.innerHTML = `<div class="cover-empty">搜索失败：${(err as Error).message}</div>`;
+    grid.innerHTML = `<div class="cover-empty">搜索失败：${formatError(err)}</div>`;
   }
 }
 
@@ -1546,7 +1583,7 @@ async function downloadAndAddCover(candidate: api.CoverCandidate) {
     closeModal("modal-cover-pick");
   } catch (err) {
     console.error("Download cover failed:", err);
-    showToast("下载失败: " + (err as Error).message, "error");
+    showToast("下载失败: " + formatError(err), "error");
   }
 }
 
