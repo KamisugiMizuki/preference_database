@@ -142,6 +142,24 @@ fn get_project_root() -> std::path::PathBuf {
     std::path::PathBuf::from(".")
 }
 
+/// 图片路径解析：相对路径拼接项目根，绝对路径（旧数据）原样返回
+fn resolve_image_path(path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        get_project_root().join(p)
+    }
+}
+
+/// 绝对路径转项目相对路径（用于入库）；不在项目内则原样返回
+fn to_project_rel_path(path: &std::path::Path) -> String {
+    match path.strip_prefix(get_project_root()) {
+        Ok(rel) => rel.to_string_lossy().to_string(),
+        Err(_) => path.to_string_lossy().to_string(),
+    }
+}
+
 fn get_db_path() -> String {
     let project_root = get_project_root();
     let db_dir = project_root.join("database");
@@ -647,7 +665,7 @@ fn delete_entries(ids: Vec<String>) -> Result<(), String> {
 
         // 删除本地图片文件
         for path in paths {
-            std::fs::remove_file(&path).ok();
+            std::fs::remove_file(resolve_image_path(&path)).ok();
         }
     }
 
@@ -709,7 +727,7 @@ fn delete_entry_image(id: String) -> Result<(), String> {
 
     // 删除文件
     if let Some(p) = path {
-        std::fs::remove_file(&p).ok();
+        std::fs::remove_file(resolve_image_path(&p)).ok();
     }
 
     Ok(())
@@ -1440,7 +1458,7 @@ fn download_cover(
 
     std::fs::write(&target, &bytes).map_err(|e| format!("写入失败: {}", e))?;
 
-    Ok(target.to_string_lossy().to_string())
+    Ok(to_project_rel_path(&target))
 }
 
 /// 处理拖入的本地图片：复制到 cover_image 目录并重命名
@@ -1483,7 +1501,7 @@ fn import_local_image(source_path: String, title: String, creator: Option<String
     // 复制文件
     std::fs::copy(&source_path, &target).map_err(|e| format!("复制文件失败: {}", e))?;
 
-    Ok(target.to_string_lossy().to_string())
+    Ok(to_project_rel_path(&target))
 }
 
 fn sanitize_filename(s: &str) -> String {
@@ -1532,7 +1550,7 @@ fn get_image_base64(path: String) -> Result<String, String> {
     eprintln!("[DEBUG] get_image_base64 called");
     eprintln!("[DEBUG] Path: [{}]", path);
     
-    let bytes = std::fs::read(&path).map_err(|e| {
+    let bytes = std::fs::read(resolve_image_path(&path)).map_err(|e| {
         eprintln!("[DEBUG] Read error: {}", e);
         format!("读取图片失败: {}", e)
     })?;
@@ -1687,5 +1705,21 @@ mod cover_tests {
             upgrade_cover_url("//lain.bgm.tv/r/100/pic/cover/l/13/c5/x.jpg"),
             "//lain.bgm.tv/pic/cover/l/13/c5/x.jpg"
         );
+    }
+
+    #[test]
+    fn test_image_path_resolution() {
+        // 相对路径 → 拼项目根（绝对路径且以相对路径结尾）
+        let rel = resolve_image_path("resource/cover_image/a.jpg");
+        assert!(rel.is_absolute());
+        assert!(rel.to_string_lossy().ends_with("resource/cover_image/a.jpg"));
+
+        // 绝对路径（旧数据）→ 原样返回
+        let abs = resolve_image_path("D:\\some\\where\\b.jpg");
+        assert_eq!(abs.to_string_lossy(), "D:\\some\\where\\b.jpg");
+
+        // 相对 → 绝对 → 相对 往返
+        let back = to_project_rel_path(&rel);
+        assert_eq!(back, "resource/cover_image/a.jpg");
     }
 }
