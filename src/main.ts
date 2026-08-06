@@ -426,8 +426,9 @@ async function renderDetailModal(entry: Entry) {
       thumbnails.querySelectorAll(".thumbnail").forEach((t) => t.classList.remove("active"));
       thumb.classList.add("active");
     });
-    thumb.addEventListener("keydown", (ev: KeyboardEvent) => {
-      if (ev.key === "Enter" || ev.key === " ") {
+    thumb.addEventListener("keydown", (ev: Event) => {
+      const kev = ev as KeyboardEvent;
+      if (kev.key === "Enter" || kev.key === " ") {
         ev.preventDefault();
         thumb.dispatchEvent(new MouseEvent("click"));
       }
@@ -1430,8 +1431,9 @@ function renderCoverSourceList(batch = false) {
         fetchAndShowCandidates(id, source.name);
       }
     });
-    item.addEventListener("keydown", (ev: KeyboardEvent) => {
-      if (ev.key === "Enter" || ev.key === " ") {
+    item.addEventListener("keydown", (ev: Event) => {
+      const kev = ev as KeyboardEvent;
+      if (kev.key === "Enter" || kev.key === " ") {
         ev.preventDefault();
         item.dispatchEvent(new MouseEvent("click"));
       }
@@ -1593,8 +1595,9 @@ function renderCoverCandidates(candidates: api.CoverCandidate[], sourceName: str
         downloadAndAddCover(candidate);
       }
     });
-    cell.addEventListener("keydown", (ev: KeyboardEvent) => {
-      if (ev.key === "Enter" || ev.key === " ") {
+    cell.addEventListener("keydown", (ev: Event) => {
+      const kev = ev as KeyboardEvent;
+      if (kev.key === "Enter" || kev.key === " ") {
         ev.preventDefault();
         cell.dispatchEvent(new MouseEvent("click"));
       }
