@@ -50,7 +50,7 @@
             <button id="btn-add-genre" class="text-btn">+ 添加类型</button>
           </div>
           <div class="sidebar-section">
-            <h3>等级筛选</h3>
+            <h3>等级筛选 <span class="filter-hint">全选=全部</span></h3>
             <div class="rating-filter">
               <label><input type="checkbox" value="S" class="rating-checkbox" checked /> <span class="rating-badge S">S</span></label>
               <label><input type="checkbox" value="A" class="rating-checkbox" checked /> <span class="rating-badge A">A</span></label>
@@ -259,6 +259,25 @@
           <div id="stats-genre" class="stats-bars"></div>
           <h3>品鉴年份</h3>
           <div id="stats-year" class="stats-bars"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模态框：分享卡片预览 -->
+    <div id="modal-share-preview" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-share-preview-title">
+      <div class="modal-content modal-small">
+        <div class="modal-header">
+          <h2 id="modal-share-preview-title">分享卡片预览</h2>
+          <button class="modal-close" aria-label="关闭" data-modal="modal-share-preview">&times;</button>
+        </div>
+        <div class="share-preview-body">
+          <p id="share-preview-name" class="share-preview-name"></p>
+          <img id="share-preview-img" class="share-preview-img" alt="分享卡片预览" />
+        </div>
+        <div class="modal-actions">
+          <button id="btn-share-regenerate" class="secondary-btn">重新生成</button>
+          <button type="button" class="secondary-btn" data-modal="modal-share-preview">取消</button>
+          <button id="btn-share-save" class="primary-btn">保存</button>
         </div>
       </div>
     </div>

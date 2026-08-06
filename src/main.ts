@@ -573,18 +573,18 @@ async function generateShareCard(entry: Entry): Promise<string> {
     for (const tag of entry.tags.slice(0, 6)) {
       const tw = ctx.measureText(tag).width + 24;
       if (tx + tw > W - 32) break;
-      ctx.fillStyle = "rgba(15,52,96,0.85)";
+      ctx.fillStyle = "#228be6"; // accent 胶囊，与面板区分
       ctx.beginPath();
       ctx.roundRect(tx, tagY - 18, tw, 26, 13);
       ctx.fill();
-      ctx.fillStyle = "#e8e8e8";
+      ctx.fillStyle = "#ffffff";
       ctx.fillText(tag, tx + 12, tagY);
       tx += tw + 8;
     }
   }
 
   // 水印
-  ctx.fillStyle = "#666666";
+  ctx.fillStyle = "#a0a0a0";
   ctx.font = "13px 'Microsoft YaHei', sans-serif";
   ctx.fillText("文艺作品品鉴 · Preference Database", 32, H - 26);
 
@@ -620,6 +620,29 @@ function renderStatsBars(
     </div>`
     )
     .join("");
+}
+
+function fillStats(stats: api.Stats) {
+  $("stats-total").textContent = String(stats.total);
+  $("stats-scope").textContent = hasActiveFilter() ? "当前筛选范围内" : "全部作品";
+  renderStatsBars("stats-rating", stats.rating_dist, (v) => {
+    const colors: Record<string, string> = { S: "#ff6b6b", A: "#ffa94d", B: "#69db7c", C: "#15aabf" };
+    return colors[v] || "#a6adc8";
+  });
+  renderStatsBars("stats-genre", stats.genre_dist, (v) => getGenreColor(v));
+  renderStatsBars("stats-year", stats.year_dist, () => "#a6adc8");
+}
+
+/// 统计面板开着时按当前筛选刷新（筛选/搜索/排序变化后调用）
+async function refreshStatsIfOpen() {
+  const modal = $<HTMLDivElement>("modal-stats");
+  if (modal.classList.contains("hidden")) return;
+  try {
+    const stats = await api.getStats({ ...currentSearchQuery });
+    fillStats(stats);
+  } catch {
+    // 静默：面板开着但刷新失败，保留旧数据
+  }
 }
 
 // ============================================================================
@@ -730,6 +753,7 @@ async function loadEntries(append = false) {
       selectedEntryIds.clear();
       updateBatchButton();
       await renderEntries();
+      refreshStatsIfOpen(); // 统计面板开着时同步当前筛选口径
     }
   } catch (err) {
     console.error("Failed to load entries:", err);
@@ -995,12 +1019,27 @@ function bindEvents() {
     openModal("modal-entry");
   });
 
-  // 分享卡片
+  // 分享卡片（生成后先预览，确认再保存）
+  let shareCardDataUrl = "";
+
   $("btn-share-card").addEventListener("click", async () => {
     if (!currentEntry) return;
     try {
       showToast("正在生成分享卡片...");
-      const dataUrl = await generateShareCard(currentEntry);
+      shareCardDataUrl = await generateShareCard(currentEntry);
+      const previewImg = $<HTMLImageElement>("share-preview-img");
+      previewImg.src = shareCardDataUrl;
+      $("share-preview-name").textContent = currentEntry.name;
+      openModal("modal-share-preview");
+    } catch (err) {
+      showToast("生成失败: " + formatError(err), "error");
+    }
+  });
+
+  // 预览确认后保存
+  $("btn-share-save").addEventListener("click", async () => {
+    if (!currentEntry || !shareCardDataUrl) return;
+    try {
       const safeName = currentEntry.name.replace(/[\\/:*?"<>|]/g, "_");
       const savePath = await save({
         title: "保存分享卡片",
@@ -1008,8 +1047,21 @@ function bindEvents() {
         filters: [{ name: "PNG 图片", extensions: ["png"] }],
       });
       if (!savePath) return;
-      await api.saveBase64Image(dataUrl, savePath);
+      await api.saveBase64Image(shareCardDataUrl, savePath);
+      closeModal("modal-share-preview");
       showToast("分享卡片已保存");
+    } catch (err) {
+      showToast("保存失败: " + formatError(err), "error");
+    }
+  });
+
+  // 预览重新生成
+  $("btn-share-regenerate").addEventListener("click", async () => {
+    if (!currentEntry) return;
+    try {
+      showToast("正在重新生成...");
+      shareCardDataUrl = await generateShareCard(currentEntry);
+      $<HTMLImageElement>("share-preview-img").src = shareCardDataUrl;
     } catch (err) {
       showToast("生成失败: " + formatError(err), "error");
     }
@@ -1300,21 +1352,16 @@ function bindEvents() {
     openModal("modal-confirm");
   });
 
-  // 统计面板（与当前筛选联动）
+  // 统计面板（与当前筛选联动；打开时先显示加载态，筛选变化时自动刷新）
   $("btn-stats").addEventListener("click", async () => {
+    $("stats-total").textContent = "…";
+    $("stats-scope").textContent = "计算中…";
+    openModal("modal-stats");
     try {
       const stats = await api.getStats({ ...currentSearchQuery });
-      $("stats-total").textContent = String(stats.total);
-      const hasFilter = hasActiveFilter();
-      $("stats-scope").textContent = hasFilter ? "当前筛选范围内" : "全部作品";
-      renderStatsBars("stats-rating", stats.rating_dist, (v) => {
-        const colors: Record<string, string> = { S: "#ff6b6b", A: "#ffa94d", B: "#69db7c", C: "#15aabf" };
-        return colors[v] || "#a6adc8";
-      });
-      renderStatsBars("stats-genre", stats.genre_dist, (v) => getGenreColor(v));
-      renderStatsBars("stats-year", stats.year_dist, () => "#a6adc8");
-      openModal("modal-stats");
+      fillStats(stats);
     } catch (err) {
+      $("stats-scope").textContent = "统计加载失败";
       showToast("统计加载失败: " + formatError(err), "error");
     }
   });
@@ -1479,9 +1526,20 @@ function bindEvents() {
     try {
       showToast("正在导入...");
       const result = await api.importEntries(selected, format);
-      showToast(`导入完成：成功 ${result.imported} 条，失败 ${result.failed} 条`);
-      if (result.errors.length > 0) {
-        console.warn("Import errors:", result.errors.slice(0, 5));
+      if (result.failed > 0) {
+        // 失败明细弹窗（最多展示 20 条）
+        const lines = result.errors
+          .slice(0, 20)
+          .map((e) => "• " + e)
+          .join("\n");
+        $("confirm-title").textContent = `导入完成（失败 ${result.failed} 条）`;
+        $("btn-confirm-delete").textContent = "知道了";
+        $("btn-confirm-delete").className = "primary-btn";
+        $("confirm-message").textContent = `成功 ${result.imported} 条，失败 ${result.failed} 条：\n${lines}`;
+        confirmAction = () => {};
+        openModal("modal-confirm");
+      } else {
+        showToast(`导入完成：成功 ${result.imported} 条`);
       }
       await loadGenres();
       await loadTagFilter();
@@ -1859,6 +1917,7 @@ async function init() {
       "modal-detail",
       "modal-export",
       "modal-stats",
+      "modal-share-preview",
       "modal-confirm",
       "modal-genre",
     ];

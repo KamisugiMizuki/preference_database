@@ -464,15 +464,15 @@ fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
     let (filter_sql, params_vec) = build_filter_sql(&query);
     sql.push_str(&filter_sql);
 
-    // 排序
-    let sort_col = match query.sort_by.as_str() {
-        "name" => "e.name",
-        "rating" => "e.rating",
-        "tasting_date" => "e.tasting_date",
-        _ => "e.updated_at",
+    // 排序（等级按 S>A>B>C 语义序，非字母序）
+    let sort_expr = match query.sort_by.as_str() {
+        "name" => "e.name".to_string(),
+        "rating" => "CASE e.rating WHEN 'S' THEN 0 WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 3 END".to_string(),
+        "tasting_date" => "e.tasting_date".to_string(),
+        _ => "e.updated_at".to_string(),
     };
     let sort_dir = if query.sort_order == "asc" { "ASC" } else { "DESC" };
-    sql.push_str(&format!(" ORDER BY {} {}", sort_col, sort_dir));
+    sql.push_str(&format!(" ORDER BY {} {}", sort_expr, sort_dir));
 
     // 分页
     sql.push_str(&format!(" LIMIT {} OFFSET {}", query.limit, query.offset));
@@ -520,10 +520,6 @@ fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
             )
             .ok();
         
-        if primary_image.is_some() {
-            eprintln!("[DEBUG] Found primary_image for entry {}: {}", entry.name, primary_image.as_ref().unwrap());
-        }
-
         entry.tags = tags;
         entry.primary_image = primary_image;
         result.push(entry);
@@ -1845,7 +1841,7 @@ fn get_stats(query: Option<SearchQuery>) -> Result<Stats, String> {
     let rating_dist: Vec<(String, i64)> = {
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT e.rating, COUNT(DISTINCT e.id) FROM entries e JOIN genres g ON e.genre_id = g.id{} GROUP BY e.rating ORDER BY e.rating",
+                "SELECT e.rating, COUNT(DISTINCT e.id) FROM entries e JOIN genres g ON e.genre_id = g.id{} GROUP BY e.rating ORDER BY CASE e.rating WHEN 'S' THEN 0 WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 3 END",
                 where_sql
             ))
             .map_err(|e| e.to_string())?;
