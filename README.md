@@ -74,9 +74,9 @@ npm run build && npm run tauri build
 
 ## Bangumi Cookie 配置（可选）
 
-Bangumi API 对**未登录**请求隐藏全部 R18 内容。默认匿名搜索即可使用（不显示 R18）；如需在 Bangumi 源中搜索 R18 作品封面，可配置你的登录 Cookie：
+Bangumi 搜索对**未登录或无权限**账号隐藏全部 R18 内容。默认匿名搜索即可使用（不显示 R18）；如需在 Bangumi 源中搜索 R18 作品封面，可配置你的登录 Cookie：
 
-1. 浏览器登录 [bgm.tv](https://bgm.tv)（账号需注册满 30 天，否则服务端仍会隐藏 R18，此为网站策略，无法绕过）
+1. 浏览器登录 [bgm.tv](https://bgm.tv)（账号需具备 R18 内容访问权限，否则服务端仍会隐藏 R18，此为网站策略，无法绕过）
 2. 按 F12 打开开发者工具 → 切到 **Network（网络）** 面板 → 刷新页面 → 点击任意一个请求（如首页文档请求）
 3. 在右侧 **Headers（标头）→ Request Headers（请求标头）** 中找到 `Cookie` 行 → 右键 → **Copy value**（复制值）
 4. 将复制的内容粘贴到本地文件 `config/bangumi_cookie.txt`（单行即可，带不带 `Cookie:` 前缀都能识别）

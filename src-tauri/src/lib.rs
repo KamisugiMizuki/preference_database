@@ -1152,60 +1152,97 @@ fn fetch_bangumi(
 ) -> Result<Vec<CoverCandidate>, String> {
     let cookie = load_bangumi_cookie();
 
-    match search_bangumi(client, title, cookie.as_deref()) {
+    match search_bangumi_web(client, title, cookie.as_deref()) {
         Ok(list) => Ok(list),
         Err(e) if cookie.is_some() => {
             // Cookie 请求失败：回退为匿名搜索（不显示 R18）
             eprintln!("[WARN] Bangumi cookie 请求失败，回退匿名搜索: {}", e);
-            search_bangumi(client, title, None)
+            search_bangumi_web(client, title, None)
         }
         Err(e) => Err(e),
     }
 }
 
-/// 单次 Bangumi 搜索：配置了 cookie 时携带并允许 R18（nsfw: true）
-fn search_bangumi(
+/// 网页端 Bangumi 搜索（bgm.tv/subject_search，cookie 生效）：配置了 cookie 时携带，
+/// 账号具备 R18 访问权限则 R18 条目可见
+fn search_bangumi_web(
     client: &reqwest::blocking::Client,
     title: &str,
     cookie: Option<&str>,
 ) -> Result<Vec<CoverCandidate>, String> {
-    let mut filter = serde_json::json!({ "type": [2] }); // 2 = 动画
-    if cookie.is_some() {
-        filter["nsfw"] = serde_json::Value::Bool(true);
-    }
-    let body = serde_json::json!({
-        "keyword": title,
-        "filter": filter,
-    });
+    let url = format!(
+        "https://bgm.tv/subject_search/{}?cat=2",
+        urlencoding::encode(title)
+    );
 
-    let mut req = client
-        .post("https://api.bgm.tv/v0/search/subjects?limit=15")
-        .header("User-Agent", "PreferenceDatabase/0.1")
-        .json(&body);
+    let mut req = client.get(&url);
     if let Some(c) = cookie {
         req = req.header("Cookie", c);
     }
 
-    let resp = req.send().map_err(|e| format!("请求失败: {}", e))?;
-    let json: serde_json::Value = resp.json().map_err(|e| format!("解析失败: {}", e))?;
+    let html = req
+        .send()
+        .map_err(|e| format!("请求失败: {}", e))?
+        .text()
+        .map_err(|e| format!("读取失败: {}", e))?;
+
+    let document = scraper::Html::parse_document(&html);
+    let li_sel = scraper::Selector::parse("#browserItemList li").unwrap();
+    let img_sel = scraper::Selector::parse("img.cover").unwrap();
+    let title_sel = scraper::Selector::parse("a[title]").unwrap();
+
     let mut results = Vec::new();
-    if let Some(list) = json.get("data").and_then(|d| d.as_array()) {
-        for item in list {
-            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let image = item.get("image").and_then(|v| v.as_str());
-            if let Some(img) = image {
-                results.push(CoverCandidate {
-                    url: img.to_string(),
-                    thumbnail_url: Some(img.to_string()),
-                    title: Some(name.to_string()),
-                    source: "bangumi_anime".to_string(),
-                    width: None,
-                    height: None,
-                });
-            }
+    for li in document.select(&li_sel).take(15) {
+        // 封面缩略图
+        let thumb = li.select(&img_sel).next().and_then(|img| {
+            img.value().attr("src").map(|src| {
+                if src.starts_with("//") {
+                    format!("https:{}", src)
+                } else {
+                    src.to_string()
+                }
+            })
+        });
+        // 标题：li 内第一个指向条目的带 title 链接
+        let name = li
+            .select(&title_sel)
+            .find(|a| {
+                a.value()
+                    .attr("href")
+                    .map(|h| h.starts_with("/subject/"))
+                    .unwrap_or(false)
+            })
+            .and_then(|a| a.value().attr("title").map(|t| t.to_string()));
+
+        if let Some(thumb_url) = thumb {
+            results.push(CoverCandidate {
+                url: upgrade_cover_url(&thumb_url),
+                thumbnail_url: Some(thumb_url),
+                title: name,
+                source: "bangumi_anime".to_string(),
+                width: None,
+                height: None,
+            });
         }
     }
     Ok(results)
+}
+
+/// lain.bgm.tv 缩略图 URL 转原图：/r/<size>/pic/ → /pic/
+fn upgrade_cover_url(src: &str) -> String {
+    if let Some(r_pos) = src.find("/r/") {
+        let after = &src[r_pos + 3..];
+        if let Some(rel) = after.find('/') {
+            let pic_pos = r_pos + 3 + rel;
+            if src[pic_pos..].starts_with("/pic/") {
+                let mut out = String::with_capacity(src.len());
+                out.push_str(&src[..r_pos]);
+                out.push_str(&src[pic_pos..]);
+                return out;
+            }
+        }
+    }
+    src.to_string()
 }
 
 fn fetch_anilist(
@@ -1631,5 +1668,24 @@ mod cover_tests {
         assert!(read_cookie_file(&path).is_none());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_upgrade_cover_url() {
+        // 标准缩略图 → 原图
+        assert_eq!(
+            upgrade_cover_url("https://lain.bgm.tv/r/400/pic/cover/l/13/c5/400602_ZI8Y9.jpg"),
+            "https://lain.bgm.tv/pic/cover/l/13/c5/400602_ZI8Y9.jpg"
+        );
+        // 非 lain 图床 / 无尺寸段 → 原样返回
+        assert_eq!(
+            upgrade_cover_url("https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx1.jpg"),
+            "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx1.jpg"
+        );
+        // 无协议前缀
+        assert_eq!(
+            upgrade_cover_url("//lain.bgm.tv/r/100/pic/cover/l/13/c5/x.jpg"),
+            "//lain.bgm.tv/pic/cover/l/13/c5/x.jpg"
+        );
     }
 }
