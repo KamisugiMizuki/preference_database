@@ -375,15 +375,9 @@ fn delete_genre(id: String) -> Result<(), String> {
 // ============================================================================
 
 #[tauri::command]
-fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
-    let conn = DB.lock().map_err(|e| e.to_string())?;
-
-    let mut sql = String::from(
-        "SELECT DISTINCT e.id, e.name, g.name as genre_name, e.rating, e.review, e.created_at, e.updated_at
-         FROM entries e
-         JOIN genres g ON e.genre_id = g.id"
-    );
-
+/// 构建筛选片段（JOIN + WHERE）与参数，get_entries 与 export_entries 共用
+fn build_filter_sql(query: &SearchQuery) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let mut extra = String::new(); // JOIN 片段（追加在 FROM 之后）
     let mut conditions: Vec<String> = vec![];
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
 
@@ -397,7 +391,7 @@ fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
                 params_vec.push(Box::new(pattern));
             }
             "tags" => {
-                sql.push_str(" LEFT JOIN tags t ON e.id = t.entry_id");
+                extra.push_str(" LEFT JOIN tags t ON e.id = t.entry_id");
                 conditions.push("t.name LIKE ?".to_string());
                 params_vec.push(Box::new(pattern));
             }
@@ -406,7 +400,7 @@ fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
                 params_vec.push(Box::new(pattern));
             }
             _ => {
-                sql.push_str(" LEFT JOIN tags t ON e.id = t.entry_id");
+                extra.push_str(" LEFT JOIN tags t ON e.id = t.entry_id");
                 conditions.push("(e.name LIKE ? OR e.review LIKE ? OR t.name LIKE ?)".to_string());
                 params_vec.push(Box::new(pattern.clone()));
                 params_vec.push(Box::new(pattern.clone()));
@@ -435,7 +429,7 @@ fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
 
     // 标签筛选
     if !query.tag_filter.is_empty() {
-        sql.push_str(" INNER JOIN tags t2 ON e.id = t2.entry_id");
+        extra.push_str(" INNER JOIN tags t2 ON e.id = t2.entry_id");
         let placeholders: Vec<String> = query.tag_filter.iter().map(|_| "?".to_string()).collect();
         conditions.push(format!("t2.name IN ({})", placeholders.join(",")));
         for tag in &query.tag_filter {
@@ -449,10 +443,26 @@ fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
         params_vec.push(Box::new(year.to_string()));
     }
 
+    let mut sql = extra;
     if !conditions.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&conditions.join(" AND "));
     }
+    (sql, params_vec)
+}
+
+#[tauri::command]
+fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    let mut sql = String::from(
+        "SELECT DISTINCT e.id, e.name, g.name as genre_name, e.rating, e.review, e.created_at, e.updated_at
+         FROM entries e
+         JOIN genres g ON e.genre_id = g.id"
+    );
+
+    let (filter_sql, params_vec) = build_filter_sql(&query);
+    sql.push_str(&filter_sql);
 
     // 排序
     let sort_col = match query.sort_by.as_str() {
@@ -852,24 +862,44 @@ pub struct ExportEntry {
 }
 
 #[tauri::command]
-fn export_entries(ids: Option<Vec<String>>, format: String, include_images: bool) -> Result<String, String> {
+fn export_entries(
+    scope: String,
+    format: String,
+    include_images: bool,
+    ids: Option<Vec<String>>,
+    filter: Option<SearchQuery>,
+) -> Result<String, String> {
     let conn = DB.lock().map_err(|e| e.to_string())?;
 
-    let sql = if let Some(ref entry_ids) = ids {
-        let placeholders: Vec<String> = entry_ids.iter().map(|_| "?".to_string()).collect();
-        format!(
-            "SELECT e.id, e.name, g.name, e.creator, e.rating, e.review, e.tasting_date, e.created_at, e.updated_at
-             FROM entries e JOIN genres g ON e.genre_id = g.id WHERE e.id IN ({})",
-            placeholders.join(",")
-        )
-    } else {
-        "SELECT e.id, e.name, g.name, e.creator, e.rating, e.review, e.tasting_date, e.created_at, e.updated_at
-         FROM entries e JOIN genres g ON e.genre_id = g.id".to_string()
+    let base_sql = "SELECT e.id, e.name, g.name, e.creator, e.rating, e.review, e.tasting_date, e.created_at, e.updated_at
+         FROM entries e JOIN genres g ON e.genre_id = g.id";
+
+    let (sql, params_vec): (String, Vec<Box<dyn rusqlite::ToSql>>) = match scope.as_str() {
+        "selected" => {
+            let entry_ids = ids.unwrap_or_default();
+            if entry_ids.is_empty() {
+                return Err("未选择任何作品".to_string());
+            }
+            let placeholders: Vec<String> = entry_ids.iter().map(|_| "?".to_string()).collect();
+            (
+                format!("{} WHERE e.id IN ({})", base_sql, placeholders.join(",")),
+                entry_ids
+                    .into_iter()
+                    .map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>)
+                    .collect(),
+            )
+        }
+        "filtered" => {
+            let (where_sql, params) = match &filter {
+                Some(q) => build_filter_sql(q),
+                None => (String::new(), vec![]),
+            };
+            (format!("{}{}", base_sql, where_sql), params)
+        }
+        _ => (base_sql.to_string(), vec![]),
     };
 
-    let params_refs: Vec<&dyn rusqlite::ToSql> = ids.as_ref()
-        .map(|v| v.iter().map(|s| s as &dyn rusqlite::ToSql).collect())
-        .unwrap_or_default();
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 

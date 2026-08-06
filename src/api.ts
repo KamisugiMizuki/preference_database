@@ -76,14 +76,18 @@ export async function setPrimaryImage(id: string): Promise<void> {
 }
 
 export async function exportEntries(
-  ids: string[] | null,
+  scope: string,
   format: string,
-  includeImages: boolean
+  includeImages: boolean,
+  ids: string[] | null,
+  filter: SearchQuery | null
 ): Promise<string> {
   return invoke("export_entries", {
-    ids,
+    scope,
     format,
     includeImages,
+    ids,
+    filter,
   });
 }
 

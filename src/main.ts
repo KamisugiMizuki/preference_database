@@ -13,6 +13,8 @@ import type {
 
 let genres: Genre[] = [];
 let entries: api.EntrySummary[] = [];
+// 列表数据与分页状态
+let totalCount = 0;
 let currentEntry: Entry | null = null;
 let originalImageIds: string[] = [];
 // 通用确认回调：删除条目 / 恢复数据库共用（null 时确认按钮走默认删除逻辑）
@@ -141,49 +143,41 @@ function renderGenres() {
   });
 }
 
-async function renderEntries() {
-  const entryListEl = $<HTMLDivElement>("entry-list");
-  const entryCountEl = $<HTMLSpanElement>("entry-count");
-  const emptyStateEl = $<HTMLDivElement>("empty-state");
+/// 是否有活跃筛选条件（决定空态文案）
+function hasActiveFilter(): boolean {
+  return (
+    !!currentSearchQuery.keyword ||
+    selectedGenreIds.length < genres.length ||
+    selectedRatings.length < 4 ||
+    selectedTags.length > 0 ||
+    selectedYear !== null
+  );
+}
 
-  if (entries.length === 0) {
-    entryListEl.innerHTML = "";
-    entryListEl.classList.add("hidden");
-    emptyStateEl.classList.remove("hidden");
-    entryCountEl.textContent = "共 0 条作品";
-    return;
-  }
-
-  entryListEl.classList.remove("hidden");
-  emptyStateEl.classList.add("hidden");
-  entryCountEl.textContent = `共 ${entries.length} 条作品`;
-
-  const imagePromises = entries.map(async (e) => {
-    if (e.primary_image) {
+/// 加载一批条目的主图 base64
+async function loadEntryImages(list: api.EntrySummary[]): Promise<(string | null)[]> {
+  return Promise.all(
+    list.map(async (e) => {
+      if (!e.primary_image) return null;
       try {
-        console.log("[DEBUG] Loading image for entry:", e.name);
-        console.log("[DEBUG] Image path:", e.primary_image);
-        console.log("[DEBUG] Path length:", e.primary_image.length);
         const base64 = await api.getImageBase64(e.primary_image);
         const ext = e.primary_image.split(".").pop()?.toLowerCase() || "jpg";
-        const dataUrl = `data:image/${ext};base64,${base64}`;
-        console.log("[DEBUG] Image loaded, base64 length:", base64.length, "dataUrl length:", dataUrl.length);
-        console.log("[DEBUG] First 100 chars of dataUrl:", dataUrl.substring(0, 100));
-        return dataUrl;
+        return `data:image/${ext};base64,${base64}`;
       } catch (err) {
-        console.error("[DEBUG] Failed to load image:", e.primary_image, err);
+        console.error("Failed to load image:", e.primary_image, err);
         return null;
       }
-    }
-    return null;
-  });
+    })
+  );
+}
 
-  const images = await Promise.all(imagePromises);
-
-  entryListEl.innerHTML = entries
+/// 渲染一批条目卡片（append 时只追加不重绘）
+function renderEntryCards(list: api.EntrySummary[], images: (string | null)[], append = false) {
+  const entryListEl = $<HTMLDivElement>("entry-list");
+  const html = list
     .map(
       (e, idx) => `
-    <div class="entry-card" data-id="${e.id}">
+    <div class="entry-card" data-id="${e.id}" tabindex="0" role="button" aria-label="查看《${e.name}》详情">
       <input type="checkbox" class="entry-select" data-id="${e.id}" ${
         selectedEntryIds.has(e.id) ? "checked" : ""
       } />
@@ -204,7 +198,7 @@ async function renderEntries() {
             ? `<div class="entry-card-tags">
           ${e.tags
             .slice(0, 3)
-            .map((t) => `<span class="entry-tag">${t}</span>`)
+            .map((t: string) => `<span class="entry-tag">${t}</span>`)
             .join("")}
           ${e.tags.length > 3 ? `<span class="entry-tag">+${e.tags.length - 3}</span>` : ""}
         </div>`
@@ -216,26 +210,75 @@ async function renderEntries() {
     )
     .join("");
 
-  entryListEl.querySelectorAll(".entry-card").forEach((card) => {
+  if (append) {
+    entryListEl.insertAdjacentHTML("beforeend", html);
+  } else {
+    entryListEl.innerHTML = html;
+  }
+
+  // 只对本次渲染的卡片绑定事件
+  const cards = Array.from(entryListEl.querySelectorAll(".entry-card"));
+  const startIdx = append ? cards.length - list.length : 0;
+  for (let i = startIdx; i < cards.length; i++) {
+    const card = cards[i] as HTMLElement;
     card.addEventListener("click", () => {
       const id = card.getAttribute("data-id")!;
       showEntryDetail(id);
     });
-  });
+    card.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        const id = card.getAttribute("data-id")!;
+        showEntryDetail(id);
+      }
+    });
+  }
 
   // 多选 checkbox：不触发卡片点击，维护选中集合
-  entryListEl.querySelectorAll(".entry-select").forEach((cb) => {
+  const checkboxes = Array.from(entryListEl.querySelectorAll(".entry-select"));
+  for (let i = startIdx; i < checkboxes.length; i++) {
+    const cb = checkboxes[i] as HTMLInputElement;
     cb.addEventListener("click", (ev) => ev.stopPropagation());
     cb.addEventListener("change", () => {
-      const id = (cb as HTMLInputElement).getAttribute("data-id")!;
-      if ((cb as HTMLInputElement).checked) {
+      const id = cb.getAttribute("data-id")!;
+      if (cb.checked) {
         selectedEntryIds.add(id);
       } else {
         selectedEntryIds.delete(id);
       }
       updateBatchButton();
     });
-  });
+  }
+}
+
+async function renderEntries() {
+  const entryListEl = $<HTMLDivElement>("entry-list");
+  const entryCountEl = $<HTMLSpanElement>("entry-count");
+  const emptyStateEl = $<HTMLDivElement>("empty-state");
+  const loadMoreWrapEl = $<HTMLDivElement>("load-more-wrap");
+
+  if (entries.length === 0) {
+    entryListEl.innerHTML = "";
+    entryListEl.classList.add("hidden");
+    loadMoreWrapEl.classList.add("hidden");
+    emptyStateEl.classList.remove("hidden");
+    // 区分：筛选空态 vs 真·空库
+    const filtered = hasActiveFilter();
+    $("empty-all").classList.toggle("hidden", filtered);
+    $("empty-filtered").classList.toggle("hidden", !filtered);
+    entryCountEl.textContent = "共 0 条作品";
+    return;
+  }
+
+  entryListEl.classList.remove("hidden");
+  emptyStateEl.classList.add("hidden");
+  // 诚实计数：显示 X / 共 N 条
+  entryCountEl.textContent = `显示 ${entries.length} / 共 ${totalCount} 条作品`;
+  // 加载更多按钮
+  loadMoreWrapEl.classList.toggle("hidden", entries.length >= totalCount);
+
+  const images = await loadEntryImages(entries);
+  renderEntryCards(entries, images, false);
 }
 
 async function renderDetailModal(entry: Entry) {
@@ -516,29 +559,75 @@ async function loadYearFilter() {
   }
 }
 
-async function loadEntries() {
+async function loadEntries(append = false) {
   const loadingEl = $<HTMLDivElement>("loading");
   const entryListEl = $<HTMLDivElement>("entry-list");
   const emptyStateEl = $<HTMLDivElement>("empty-state");
 
-  loadingEl.classList.remove("hidden");
-  entryListEl.classList.add("hidden");
-  emptyStateEl.classList.add("hidden");
+  if (!append) {
+    loadingEl.classList.remove("hidden");
+    entryListEl.classList.add("hidden");
+    emptyStateEl.classList.add("hidden");
+  }
 
   try {
     currentSearchQuery.genre_ids = selectedGenreIds;
     currentSearchQuery.ratings = selectedRatings;
     currentSearchQuery.tag_filter = selectedTags;
     currentSearchQuery.year = selectedYear;
+    currentSearchQuery.offset = append ? entries.length : 0;
 
-    entries = await api.getEntries(currentSearchQuery);
-    await renderEntries();
+    const [newEntries, count] = await Promise.all([
+      api.getEntries(currentSearchQuery),
+      append ? Promise.resolve(totalCount) : api.getEntriesCount(),
+    ]);
+
+    if (append) {
+      entries = [...entries, ...newEntries];
+      const images = await loadEntryImages(newEntries);
+      renderEntryCards(newEntries, images, true);
+      renderEntries();
+    } else {
+      totalCount = count;
+      entries = newEntries;
+      await renderEntries();
+    }
   } catch (err) {
     console.error("Failed to load entries:", err);
     showToast("加载作品失败", "error");
   } finally {
     loadingEl.classList.add("hidden");
   }
+}
+
+/// 清除全部筛选条件并刷新
+function clearFilters() {
+  $<HTMLInputElement>("search-input").value = "";
+  $<HTMLSelectElement>("search-field").value = "all";
+  currentSearchQuery.keyword = null;
+  currentSearchQuery.search_field = null;
+
+  selectedGenreIds = [];
+  selectedRatings = ["S", "A", "B", "C"];
+  selectedTags = [];
+  selectedYear = null;
+
+  $<HTMLSelectElement>("year-filter").value = "";
+  document.querySelectorAll(".rating-checkbox").forEach((cb) => {
+    (cb as HTMLInputElement).checked = true;
+  });
+  renderGenres();
+  renderTagFilter([]);
+  renderYearFilter([]);
+
+  currentSearchQuery.sort_by = "updated_at";
+  currentSearchQuery.sort_order = "desc";
+  $<HTMLSelectElement>("sort-by").value = "updated_at";
+  $<HTMLSelectElement>("sort-order").value = "desc";
+
+  selectedEntryIds.clear();
+  updateBatchButton();
+  loadEntries();
 }
 
 async function showEntryDetail(id: string) {
@@ -771,6 +860,9 @@ function bindEvents() {
   $("btn-delete-entry").addEventListener("click", () => {
     if (!currentEntry) return;
     confirmAction = null;
+    $("confirm-title").textContent = "确认删除";
+    $("btn-confirm-delete").textContent = "删除";
+    $("btn-confirm-delete").className = "danger-btn";
     $("confirm-message").textContent = `确定要删除《${currentEntry.name}》吗？此操作不可撤销。`;
     openModal("modal-confirm");
   });
@@ -824,6 +916,23 @@ function bindEvents() {
     currentSearchQuery.keyword = keyword || null;
     currentSearchQuery.search_field = field === "all" ? null : field;
     loadEntries();
+  });
+
+  // 加载更多
+  $("btn-load-more").addEventListener("click", () => {
+    loadEntries(true);
+  });
+
+  // 清除筛选（筛选空态）
+  $("btn-clear-filters").addEventListener("click", () => {
+    clearFilters();
+  });
+
+  // 添加第一个作品（空态）
+  $("btn-empty-add").addEventListener("click", () => {
+    $("modal-title").textContent = "新增作品";
+    resetEntryForm();
+    openModal("modal-entry");
   });
 
   $("search-input").addEventListener("keydown", (e) => {
@@ -1035,6 +1144,13 @@ function bindEvents() {
 
   // 导出
   $("btn-export").addEventListener("click", () => {
+    // 无勾选时禁用"选中的作品"选项
+    const selectedRadio = document.querySelector(
+      'input[name="export-scope"][value="selected"]'
+    ) as HTMLInputElement;
+    selectedRadio.disabled = selectedEntryIds.size === 0;
+    const selectedLabel = selectedRadio.closest("label") as HTMLLabelElement;
+    selectedLabel.style.opacity = selectedRadio.disabled ? "0.5" : "1";
     openModal("modal-export");
   });
 
@@ -1045,12 +1161,20 @@ function bindEvents() {
     const includeImages = $<HTMLInputElement>("export-images").checked;
 
     let ids: string[] | null = null;
+    let filter: api.SearchQuery | null = null;
     if (scope === "selected") {
-      ids = entries.map((e) => e.id);
+      if (selectedEntryIds.size === 0) {
+        showToast("请先在列表中勾选要导出的作品", "error");
+        return;
+      }
+      ids = Array.from(selectedEntryIds);
+    } else if (scope === "filtered") {
+      // 当前筛选条件原样传给后端，导出全部命中条目（不截断）
+      filter = { ...currentSearchQuery };
     }
 
     try {
-      const filePath = await api.exportEntries(ids, format, includeImages);
+      const filePath = await api.exportEntries(scope, format, includeImages, ids, filter);
       showToast("导出成功: " + filePath);
       closeModal("modal-export");
     } catch (err) {
@@ -1077,6 +1201,9 @@ function bindEvents() {
     });
     if (!selected || typeof selected !== "string") return;
 
+    $("confirm-title").textContent = "恢复数据库";
+    $("btn-confirm-delete").textContent = "覆盖恢复";
+    $("btn-confirm-delete").className = "warning-btn";
     $("confirm-message").textContent =
       "将用所选数据库覆盖当前全部数据（当前数据库会先自动备份到 backups/）。确定继续吗？";
     confirmAction = async () => {

@@ -222,6 +222,19 @@ input, select, textarea {
   transition: background 0.2s;
 }
 
+.warning-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  background: #e8590c;
+  color: white;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.warning-btn:hover {
+  background: #d9480f;
+}
+
 .danger-btn:hover {
   background: var(--danger-hover);
 }
@@ -569,11 +582,27 @@ input, select, textarea {
   text-align: center;
   padding: 60px 20px;
   color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 
 .empty-state p {
-  margin-bottom: 16px;
+  margin-bottom: 8px;
   font-size: 16px;
+}
+
+.empty-state .empty-sub {
+  font-size: 13px;
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
+.load-more-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 16px 0 24px;
 }
 
 .loading {

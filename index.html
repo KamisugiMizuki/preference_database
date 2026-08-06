@@ -92,8 +92,19 @@
           <div id="entry-list" class="entry-list card-view"></div>
           <div id="loading" class="loading hidden">加载中...</div>
           <div id="empty-state" class="empty-state hidden">
-            <p>暂无作品</p>
-            <button id="btn-empty-add" class="primary-btn">添加第一个作品</button>
+            <div id="empty-all">
+              <p>暂无作品</p>
+              <p class="empty-sub">添加第一个作品，开始记录你的品鉴</p>
+              <button id="btn-empty-add" class="primary-btn">+ 添加第一个作品</button>
+            </div>
+            <div id="empty-filtered" class="hidden">
+              <p>没有符合筛选条件的作品</p>
+              <p class="empty-sub">试试调整或清除筛选条件</p>
+              <button id="btn-clear-filters" class="secondary-btn">清除筛选</button>
+            </div>
+          </div>
+          <div id="load-more-wrap" class="load-more-wrap hidden">
+            <button id="btn-load-more" class="secondary-btn">加载更多</button>
           </div>
         </main>
       </div>
@@ -226,11 +237,11 @@
       </div>
     </div>
 
-    <!-- 模态框：确认删除 -->
+    <!-- 模态框：确认删除/恢复 -->
     <div id="modal-confirm" class="modal hidden">
       <div class="modal-content modal-small">
         <div class="modal-header">
-          <h2>确认删除</h2>
+          <h2 id="confirm-title">确认删除</h2>
           <button class="modal-close" data-modal="modal-confirm">&times;</button>
         </div>
         <p id="confirm-message">确定要删除吗？此操作不可撤销。</p>
