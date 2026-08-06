@@ -152,7 +152,7 @@ function renderGenres() {
       <input type="checkbox" id="genre-${g.id}" value="${g.id}" ${
         selectedGenreIds.includes(g.id) ? "checked" : ""
       } />
-      <label for="genre-${g.id}">${getGenreIcon(g.name)} ${g.name}</label>
+      <label for="genre-${g.id}" style="color:${getGenreColor(g.name)}">${getGenreIcon(g.name)} ${g.name}</label>
     </div>
   `
     )
@@ -237,7 +237,7 @@ function renderEntryCards(list: api.EntrySummary[], append = false) {
         <div class="entry-card-header">
           <span class="entry-card-title">${escapeHtml(e.name)}</span>
           <span class="rating-badge ${e.rating}">${e.rating}</span>
-          <span class="entry-card-genre">${escapeHtml(e.genre_name)}</span>
+          <span class="entry-card-genre" style="color:${getGenreColor(e.genre_name)}">${escapeHtml(e.genre_name)}</span>
         </div>
         <p class="entry-card-preview">${escapeHtml(e.review_preview)}</p>
         ${
@@ -356,9 +356,12 @@ async function renderDetailModal(entry: Entry) {
   currentEntry = entry;
 
   $("detail-title").textContent = entry.name;
-  $("detail-genre").textContent = entry.genre_id
+  const genreEl = $("detail-genre");
+  const genreName = entry.genre_id
     ? genres.find((g) => g.id === entry.genre_id)?.name || ""
     : "";
+  genreEl.textContent = genreName;
+  genreEl.style.color = getGenreColor(genreName);
 
   const ratingEl = $("detail-rating");
   ratingEl.className = `rating-badge ${entry.rating}`;
@@ -516,16 +519,21 @@ async function generateShareCard(entry: Entry): Promise<string> {
   ctx.font = "bold 34px 'Microsoft YaHei', sans-serif";
   drawWrappedText(ctx, entry.name, 32, titleY, W - 64, 44, 2);
 
-  // 等级 + 类型/创作者/日期（与主 UI rating 色保持一致：styles.css --rating-*）
+  // 等级徽章（与主 UI rating-badge 一致的彩色圆角底 + 白字）
   const ratingColors: Record<string, string> = {
     S: "#ff6b6b",
     A: "#ffa94d",
     B: "#69db7c",
     C: "#74c0fc",
   };
-  ctx.fillStyle = ratingColors[entry.rating] || "#a6adc8";
-  ctx.font = "bold 24px 'Microsoft YaHei', sans-serif";
-  ctx.fillText(entry.rating, 32, titleY + 54);
+  const ratingColor = ratingColors[entry.rating] || "#a6adc8";
+  ctx.font = "bold 22px 'Microsoft YaHei', sans-serif";
+  ctx.fillStyle = ratingColor;
+  ctx.beginPath();
+  ctx.roundRect(32, titleY + 24, 44, 34, 8);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(entry.rating, 42, titleY + 51);
   const genreName = genres.find((g) => g.id === entry.genre_id)?.name || "";
   const metaText = `${genreName}${entry.creator ? " · " + entry.creator : ""}${
     entry.tasting_date ? " · " + formatDate(entry.tasting_date) : ""
@@ -1067,6 +1075,7 @@ function bindEvents() {
     entryListEl.className = "entry-list card-view";
     $("view-cards").classList.add("active");
     $("view-list").classList.remove("active");
+    localStorage.setItem("prefdb-view", "card");
   });
 
   $("view-list").addEventListener("click", () => {
@@ -1074,6 +1083,7 @@ function bindEvents() {
     entryListEl.className = "entry-list list-view";
     $("view-list").classList.add("active");
     $("view-cards").classList.remove("active");
+    localStorage.setItem("prefdb-view", "list");
   });
 
   // 添加链接
@@ -1672,6 +1682,15 @@ async function init() {
   const btnThemeInit = document.getElementById("btn-theme");
   if (btnThemeInit && document.documentElement.getAttribute("data-theme") === "dark") {
     btnThemeInit.textContent = "☀️";
+  }
+
+  // 视图偏好恢复
+  const savedView = localStorage.getItem("prefdb-view");
+  if (savedView === "list") {
+    const listEl = document.getElementById("entry-list");
+    if (listEl) listEl.className = "entry-list list-view";
+    document.getElementById("view-cards")?.classList.remove("active");
+    document.getElementById("view-list")?.classList.add("active");
   }
 
   // 全局 Esc 关闭最上层模态框（无障碍）

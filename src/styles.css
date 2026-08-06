@@ -23,14 +23,6 @@
   --rating-c: #74c0fc;
   --rating-c-bg: #e7f5ff;
 
-  /* 类型标签颜色 */
-  --genre-game: #da77f2;
-  --genre-music: #ff6b6b;
-  --genre-anime: #748ffc;
-  --genre-novel: #69db7c;
-  --genre-drama: #ffa94d;
-  --genre-default: #868e96;
-
   /* 主题色 */
   --accent: #228be6;
   --accent-hover: #1c7cd6;
@@ -309,11 +301,6 @@ input, select, textarea {
   flex: 1;
   cursor: pointer;
   color: var(--text-primary);
-}
-
-.filter-item .count {
-  font-size: 12px;
-  color: var(--text-muted);
 }
 
 .rating-filter {
