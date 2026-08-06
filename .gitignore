@@ -1,0 +1,48 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ============================================================================
+# 用户私人数据（不入库）
+# ============================================================================
+
+# SQLite 数据库：品鉴记录全文，含个人评价
+database/*
+!database/README.md
+
+# 数据库备份：程序自动/手动生成，含全部用户数据
+backups/*
+!backups/README.md
+
+# 导出文件：JSON/CSV 导出，含个人评价全文
+exports/*
+!exports/README.md
+!exports/example.json
+
+# 封面图片：用户通过爬取/导入保存的本地图片，与数据库条目绑定
+resource/cover_image/*
+!resource/cover_image/README.md
+
+# 个人待玩/待读清单
+待玩列表.md

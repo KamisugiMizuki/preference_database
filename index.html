@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Preference Database - 文艺作品品鉴管理</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div id="app">
+      <!-- 顶部工具栏 -->
+      <header class="toolbar">
+        <div class="toolbar-left">
+          <h1 class="app-title">文艺作品品鉴</h1>
+        </div>
+        <div class="toolbar-center">
+          <div class="search-box">
+            <input type="text" id="search-input" placeholder="搜索作品..." />
+            <select id="search-field">
+              <option value="all">全部</option>
+              <option value="name">名称</option>
+              <option value="tags">标签</option>
+              <option value="review">评价</option>
+            </select>
+            <button id="search-btn" class="icon-btn" title="搜索">🔍</button>
+          </div>
+        </div>
+        <div class="toolbar-right">
+          <button id="btn-new" class="primary-btn">+ 新增</button>
+          <button id="btn-export" class="icon-btn" title="导出">📤</button>
+          <button id="btn-import" class="icon-btn" title="导入">📥</button>
+          <button id="btn-backup" class="icon-btn" title="备份数据库">💾</button>
+          <button id="btn-theme" class="icon-btn" title="切换主题">🌙</button>
+        </div>
+      </header>
+
+      <!-- 主内容区 -->
+      <div class="main-content">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+          <div class="sidebar-section">
+            <h3>类型筛选</h3>
+            <div id="genre-filter" class="filter-list"></div>
+            <button id="btn-add-genre" class="text-btn">+ 添加类型</button>
+          </div>
+          <div class="sidebar-section">
+            <h3>等级筛选</h3>
+            <div class="rating-filter">
+              <label><input type="checkbox" value="S" class="rating-checkbox" checked /> <span class="rating-badge S">S</span></label>
+              <label><input type="checkbox" value="A" class="rating-checkbox" checked /> <span class="rating-badge A">A</span></label>
+              <label><input type="checkbox" value="B" class="rating-checkbox" checked /> <span class="rating-badge B">B</span></label>
+              <label><input type="checkbox" value="C" class="rating-checkbox" checked /> <span class="rating-badge C">C</span></label>
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <h3>排序方式</h3>
+            <select id="sort-by">
+              <option value="updated_at">最近修改</option>
+              <option value="name">名称</option>
+              <option value="rating">等级</option>
+              <option value="tasting_date">品鉴日期</option>
+            </select>
+            <select id="sort-order">
+              <option value="desc">降序</option>
+              <option value="asc">升序</option>
+            </select>
+          </div>
+          <div class="sidebar-section">
+            <h3>标签筛选</h3>
+            <div id="tag-filter" class="filter-list"></div>
+          </div>
+        </aside>
+
+        <!-- 列表区域 -->
+        <main class="content">
+          <div class="content-header">
+            <span id="entry-count">共 0 条作品</span>
+            <div class="view-toggle">
+              <button id="view-cards" class="view-btn active" title="卡片视图">▦</button>
+              <button id="view-list" class="view-btn" title="列表视图">☰</button>
+            </div>
+          </div>
+          <div id="entry-list" class="entry-list card-view"></div>
+          <div id="loading" class="loading hidden">加载中...</div>
+          <div id="empty-state" class="empty-state hidden">
+            <p>暂无作品</p>
+            <button id="btn-empty-add" class="primary-btn">添加第一个作品</button>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <!-- 模态框：新增/编辑作品 -->
+    <div id="modal-entry" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modal-title">新增作品</h2>
+          <button class="modal-close" data-modal="modal-entry">&times;</button>
+        </div>
+        <form id="entry-form">
+          <input type="hidden" id="entry-id" />
+          <div class="form-row">
+            <label for="entry-name">作品名称 *</label>
+            <input type="text" id="entry-name" required maxlength="200" />
+          </div>
+          <div class="form-row">
+            <label for="entry-genre">作品类型 *</label>
+            <select id="entry-genre" required></select>
+          </div>
+          <div class="form-row">
+            <label for="entry-creator">原作者/创作者</label>
+            <input type="text" id="entry-creator" />
+          </div>
+          <div class="form-row">
+            <label for="entry-rating">个人评价等级 *</label>
+            <select id="entry-rating" required>
+              <option value="S">S</option>
+              <option value="A">A</option>
+              <option value="B">B</option>
+              <option value="C">C</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label for="entry-review">个人评价文段 *</label>
+            <textarea id="entry-review" required minlength="10" maxlength="20000" rows="6"></textarea>
+          </div>
+          <div class="form-row">
+            <label for="entry-date">品鉴日期</label>
+            <input type="date" id="entry-date" />
+          </div>
+          <div class="form-row">
+            <label for="entry-tags">标签（用逗号分隔）</label>
+            <input type="text" id="entry-tags" placeholder="科幻, 治愈, 神作" />
+          </div>
+          <div class="form-row">
+            <label>外部链接</label>
+            <div id="links-container"></div>
+            <button type="button" id="btn-add-link" class="text-btn">+ 添加链接</button>
+          </div>
+          <div class="form-row">
+            <label>图片</label>
+            <div id="images-container" class="images-grid"></div>
+            <button type="button" id="btn-add-image" class="text-btn">+ 手动添加</button>
+            <button type="button" id="btn-fetch-cover" class="text-btn">🔍 联网搜索封面</button>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="secondary-btn" data-modal="modal-entry">取消</button>
+            <button type="submit" class="primary-btn">保存</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- 模态框：详情查看 -->
+    <div id="modal-detail" class="modal hidden">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h2 id="detail-title">作品详情</h2>
+          <button class="modal-close" data-modal="modal-detail">&times;</button>
+        </div>
+        <div class="detail-content">
+          <div class="detail-images">
+            <div id="detail-main-image" class="main-image"></div>
+            <div id="detail-thumbnails" class="thumbnails"></div>
+          </div>
+          <div class="detail-info">
+            <div class="detail-meta">
+              <span id="detail-genre" class="genre-tag"></span>
+              <span id="detail-rating" class="rating-badge"></span>
+              <span id="detail-date"></span>
+            </div>
+            <p id="detail-creator" class="detail-creator"></p>
+            <div id="detail-tags" class="detail-tags"></div>
+            <div id="detail-links" class="detail-links"></div>
+            <div id="detail-review" class="detail-review"></div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="btn-delete-entry" class="danger-btn">删除</button>
+          <button id="btn-edit-entry" class="primary-btn">编辑</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模态框：导出 -->
+    <div id="modal-export" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>导出作品</h2>
+          <button class="modal-close" data-modal="modal-export">&times;</button>
+        </div>
+        <form id="export-form">
+          <div class="form-row">
+            <label>导出范围</label>
+            <label><input type="radio" name="export-scope" value="all" checked /> 全部作品</label>
+            <label><input type="radio" name="export-scope" value="filtered" /> 当前筛选结果</label>
+            <label><input type="radio" name="export-scope" value="selected" /> 选中的作品</label>
+          </div>
+          <div class="form-row">
+            <label for="export-format">导出格式</label>
+            <select id="export-format">
+              <option value="json">JSON</option>
+              <option value="csv">CSV</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label><input type="checkbox" id="export-images" /> 包含图片路径</label>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="secondary-btn" data-modal="modal-export">取消</button>
+            <button type="submit" class="primary-btn">导出</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- 模态框：确认删除 -->
+    <div id="modal-confirm" class="modal hidden">
+      <div class="modal-content modal-small">
+        <div class="modal-header">
+          <h2>确认删除</h2>
+          <button class="modal-close" data-modal="modal-confirm">&times;</button>
+        </div>
+        <p id="confirm-message">确定要删除吗？此操作不可撤销。</p>
+        <div class="form-actions">
+          <button type="button" class="secondary-btn" data-modal="modal-confirm">取消</button>
+          <button type="button" id="btn-confirm-delete" class="danger-btn">删除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模态框：添加类型 -->
+    <div id="modal-genre" class="modal hidden">
+      <div class="modal-content modal-small">
+        <div class="modal-header">
+          <h2>添加类型</h2>
+          <button class="modal-close" data-modal="modal-genre">&times;</button>
+        </div>
+        <form id="genre-form">
+          <div class="form-row">
+            <label for="genre-name">类型名称</label>
+            <input type="text" id="genre-name" required maxlength="50" />
+          </div>
+          <div class="form-actions">
+            <button type="button" class="secondary-btn" data-modal="modal-genre">取消</button>
+            <button type="submit" class="primary-btn">添加</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- 模态框：选择封面数据源 -->
+    <div id="modal-cover-source" class="modal hidden">
+      <div class="modal-content modal-small">
+        <div class="modal-header">
+          <h2>选择封面来源</h2>
+          <button class="modal-close" data-modal="modal-cover-source">&times;</button>
+        </div>
+        <div class="form-row">
+          <label>使用方式</label>
+          <select id="cover-usage-filter">
+            <option value="all">全部</option>
+            <option value="general">通用</option>
+            <option value="movie">影视</option>
+            <option value="book">图书</option>
+            <option value="music">音乐</option>
+            <option value="anime">动漫</option>
+            <option value="game">游戏</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>数据源</label>
+          <div id="cover-source-list" class="source-list"></div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="secondary-btn" data-modal="modal-cover-source">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模态框：选择封面图片 -->
+    <div id="modal-cover-pick" class="modal hidden">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h2>选择封面</h2>
+          <button class="modal-close" data-modal="modal-cover-pick">&times;</button>
+        </div>
+        <div class="cover-search-bar">
+          <span id="cover-search-info"></span>
+          <button type="button" id="btn-cover-change-source" class="text-btn">更换来源</button>
+        </div>
+        <div id="cover-candidates" class="cover-grid"></div>
+        <div class="form-actions">
+          <button type="button" class="secondary-btn" data-modal="modal-cover-pick">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast 提示 -->
+    <div id="toast" class="toast hidden"></div>
+  </body>
+</html>

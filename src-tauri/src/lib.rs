@@ -1,0 +1,1529 @@
+use base64::Engine;
+use chrono::Utc;
+use once_cell::sync::Lazy;
+use rusqlite::{params, Connection, Result as SqliteResult};
+use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+use uuid::Uuid;
+
+// ============================================================================
+// 数据库模型
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Genre {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalLink {
+    pub id: String,
+    pub entry_id: String,
+    pub url: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tag {
+    pub id: String,
+    pub entry_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntryImage {
+    pub id: String,
+    pub entry_id: String,
+    pub path: String,
+    pub is_primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Entry {
+    pub id: String,
+    pub name: String,
+    pub genre_id: String,
+    pub creator: Option<String>,
+    pub rating: String, // S, A, B, C
+    pub review: String,
+    pub tasting_date: Option<String>,
+    pub links: Vec<ExternalLink>,
+    pub tags: Vec<String>,
+    pub images: Vec<EntryImage>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntrySummary {
+    pub id: String,
+    pub name: String,
+    pub genre_name: String,
+    pub rating: String,
+    pub review_preview: String,
+    pub primary_image: Option<String>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateEntryRequest {
+    pub name: String,
+    pub genre_id: String,
+    pub creator: Option<String>,
+    pub rating: String,
+    pub review: String,
+    pub tasting_date: Option<String>,
+    pub links: Vec<ExternalLink>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateEntryRequest {
+    pub id: String,
+    pub name: String,
+    pub genre_id: String,
+    pub creator: Option<String>,
+    pub rating: String,
+    pub review: String,
+    pub tasting_date: Option<String>,
+    pub links: Vec<ExternalLink>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchQuery {
+    pub keyword: Option<String>,
+    pub search_field: Option<String>, // "all", "name", "tags", "review"
+    pub genre_ids: Vec<String>,
+    pub ratings: Vec<String>,
+    pub tag_filter: Vec<String>,
+    pub year: Option<i32>,
+    pub sort_by: String,       // "name", "rating", "tasting_date", "updated_at"
+    pub sort_order: String,     // "asc", "desc"
+    pub offset: i64,
+    pub limit: i64,
+}
+
+// ============================================================================
+// 封面爬取相关结构
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverSource {
+    pub id: String,
+    pub name: String,
+    pub source_type: String, // "douban", "bing", "google", "bangumi" 等
+    pub usage: String,       // "general", "movie", "book", "music", "anime", "game"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverCandidate {
+    pub url: String,
+    pub thumbnail_url: Option<String>,
+    pub title: Option<String>,
+    pub source: String, // 来源 ID
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+// ============================================================================
+// 数据库初始化
+// ============================================================================
+
+fn get_project_root() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(root) = exe.ancestors().nth(4) {
+            return root.to_path_buf();
+        }
+    }
+    std::path::PathBuf::from(".")
+}
+
+fn get_db_path() -> String {
+    let project_root = get_project_root();
+    let db_dir = project_root.join("database");
+    std::fs::create_dir_all(&db_dir).ok();
+    db_dir.join("database.db").to_string_lossy().to_string()
+}
+
+static DB: Lazy<Mutex<Connection>> = Lazy::new(|| {
+    let db_path = get_db_path();
+    let conn = Connection::open(&db_path).expect("Failed to open database");
+    init_database(&conn).expect("Failed to initialize database");
+    Mutex::new(conn)
+});
+
+fn init_database(conn: &Connection) -> SqliteResult<()> {
+    // 作品类型表
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS genres (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // 作品条目表
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS entries (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            genre_id TEXT NOT NULL,
+            creator TEXT,
+            rating TEXT NOT NULL,
+            review TEXT NOT NULL,
+            tasting_date TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (genre_id) REFERENCES genres(id)
+        )",
+        [],
+    )?;
+
+    // 外部链接表
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS external_links (
+            id TEXT PRIMARY KEY,
+            entry_id TEXT NOT NULL,
+            url TEXT NOT NULL,
+            label TEXT NOT NULL,
+            FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    // 标签表
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tags (
+            id TEXT PRIMARY KEY,
+            entry_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    // 图片表
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS entry_images (
+            id TEXT PRIMARY KEY,
+            entry_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    // 创建索引
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_genre ON entries(genre_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_rating ON entries(rating)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_name ON entries(name)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_entry ON tags(entry_id)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_links_entry ON external_links(entry_id)", [])?;
+
+    // 插入默认类型
+    let default_genres = ["游戏", "音乐", "动漫", "小说", "影视剧"];
+    for genre in default_genres {
+        conn.execute(
+            "INSERT OR IGNORE INTO genres (id, name, is_default, created_at) VALUES (?1, ?2, 1, ?3)",
+            params![Uuid::new_v4().to_string(), genre, Utc::now().to_rfc3339()],
+        )?;
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// 辅助函数
+// ============================================================================
+
+// ============================================================================
+// 类型管理命令
+// ============================================================================
+
+#[tauri::command]
+fn get_genres() -> Result<Vec<Genre>, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, is_default, created_at FROM genres ORDER BY is_default DESC, name ASC")
+        .map_err(|e| e.to_string())?;
+
+    let genres = stmt
+        .query_map([], |row| {
+            Ok(Genre {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                is_default: row.get::<_, i32>(2)? != 0,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(genres)
+}
+
+#[tauri::command]
+fn create_genre(name: String) -> Result<Genre, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    let created_at = Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO genres (id, name, is_default, created_at) VALUES (?1, ?2, 0, ?3)",
+        params![id, name, created_at],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(Genre {
+        id,
+        name,
+        is_default: false,
+        created_at,
+    })
+}
+
+#[tauri::command]
+fn delete_genre(id: String) -> Result<(), String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    // 检查是否有条目使用此类型
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM entries WHERE genre_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if count > 0 {
+        return Err("无法删除：此类型下仍有作品条目".to_string());
+    }
+
+    conn.execute("DELETE FROM genres WHERE id = ?1 AND is_default = 0", params![id])
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+// ============================================================================
+// 条目管理命令
+// ============================================================================
+
+#[tauri::command]
+fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    let mut sql = String::from(
+        "SELECT DISTINCT e.id, e.name, g.name as genre_name, e.rating, e.review, e.created_at, e.updated_at
+         FROM entries e
+         JOIN genres g ON e.genre_id = g.id"
+    );
+
+    let mut conditions: Vec<String> = vec![];
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+
+    // 关键词搜索
+    if let Some(ref keyword) = query.keyword {
+        let field = query.search_field.as_deref().unwrap_or("all");
+        let pattern = format!("%{}%", keyword);
+        match field {
+            "name" => {
+                conditions.push("e.name LIKE ?".to_string());
+                params_vec.push(Box::new(pattern));
+            }
+            "tags" => {
+                sql.push_str(" LEFT JOIN tags t ON e.id = t.entry_id");
+                conditions.push("t.name LIKE ?".to_string());
+                params_vec.push(Box::new(pattern));
+            }
+            "review" => {
+                conditions.push("e.review LIKE ?".to_string());
+                params_vec.push(Box::new(pattern));
+            }
+            _ => {
+                sql.push_str(" LEFT JOIN tags t ON e.id = t.entry_id");
+                conditions.push("(e.name LIKE ? OR e.review LIKE ? OR t.name LIKE ?)".to_string());
+                params_vec.push(Box::new(pattern.clone()));
+                params_vec.push(Box::new(pattern.clone()));
+                params_vec.push(Box::new(pattern));
+            }
+        }
+    }
+
+    // 类型筛选
+    if !query.genre_ids.is_empty() {
+        let placeholders: Vec<String> = query.genre_ids.iter().map(|_| "?".to_string()).collect();
+        conditions.push(format!("e.genre_id IN ({})", placeholders.join(",")));
+        for gid in &query.genre_ids {
+            params_vec.push(Box::new(gid.clone()));
+        }
+    }
+
+    // 等级筛选
+    if !query.ratings.is_empty() {
+        let placeholders: Vec<String> = query.ratings.iter().map(|_| "?".to_string()).collect();
+        conditions.push(format!("e.rating IN ({})", placeholders.join(",")));
+        for r in &query.ratings {
+            params_vec.push(Box::new(r.clone()));
+        }
+    }
+
+    // 标签筛选
+    if !query.tag_filter.is_empty() {
+        sql.push_str(" INNER JOIN tags t2 ON e.id = t2.entry_id");
+        let placeholders: Vec<String> = query.tag_filter.iter().map(|_| "?".to_string()).collect();
+        conditions.push(format!("t2.name IN ({})", placeholders.join(",")));
+        for tag in &query.tag_filter {
+            params_vec.push(Box::new(tag.clone()));
+        }
+    }
+
+    // 年份筛选
+    if let Some(year) = query.year {
+        conditions.push("strftime('%Y', e.tasting_date) = ?".to_string());
+        params_vec.push(Box::new(year.to_string()));
+    }
+
+    if !conditions.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conditions.join(" AND "));
+    }
+
+    // 排序
+    let sort_col = match query.sort_by.as_str() {
+        "name" => "e.name",
+        "rating" => "e.rating",
+        "tasting_date" => "e.tasting_date",
+        _ => "e.updated_at",
+    };
+    let sort_dir = if query.sort_order == "asc" { "ASC" } else { "DESC" };
+    sql.push_str(&format!(" ORDER BY {} {}", sort_col, sort_dir));
+
+    // 分页
+    sql.push_str(&format!(" LIMIT {} OFFSET {}", query.limit, query.offset));
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+
+    let entries = stmt
+        .query_map(params_refs.as_slice(), |row| {
+            let review: String = row.get(4)?;
+            Ok(EntrySummary {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                genre_name: row.get(2)?,
+                rating: row.get(3)?,
+                review_preview: review.chars().take(50).collect(),
+                primary_image: None,
+                tags: vec![],
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    // 补充标签和主图
+    drop(stmt);
+    let mut result = Vec::new();
+    for mut entry in entries {
+        let mut stmt = conn
+            .prepare("SELECT name FROM tags WHERE entry_id = ?")
+            .map_err(|e| e.to_string())?;
+        let tags: Vec<String> = stmt
+            .query_map(params![entry.id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        let primary_image: Option<String> = conn
+            .query_row(
+                "SELECT path FROM entry_images WHERE entry_id = ? AND is_primary = 1",
+                params![entry.id],
+                |row| row.get(0),
+            )
+            .ok();
+        
+        if primary_image.is_some() {
+            eprintln!("[DEBUG] Found primary_image for entry {}: {}", entry.name, primary_image.as_ref().unwrap());
+        }
+
+        entry.tags = tags;
+        entry.primary_image = primary_image;
+        result.push(entry);
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
+fn get_entry(id: String) -> Result<Entry, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    let entry = conn
+        .query_row(
+            "SELECT id, name, genre_id, creator, rating, review, tasting_date, created_at, updated_at
+             FROM entries WHERE id = ?",
+            params![id],
+            |row| {
+                Ok(Entry {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    genre_id: row.get(2)?,
+                    creator: row.get(3)?,
+                    rating: row.get(4)?,
+                    review: row.get(5)?,
+                    tasting_date: row.get(6)?,
+                    links: vec![],
+                    tags: vec![],
+                    images: vec![],
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    // 获取链接
+    let mut stmt = conn
+        .prepare("SELECT id, entry_id, url, label FROM external_links WHERE entry_id = ?")
+        .map_err(|e| e.to_string())?;
+    let links = stmt
+        .query_map(params![id], |row| {
+            Ok(ExternalLink {
+                id: row.get(0)?,
+                entry_id: row.get(1)?,
+                url: row.get(2)?,
+                label: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    // 获取标签
+    let mut stmt = conn
+        .prepare("SELECT name FROM tags WHERE entry_id = ?")
+        .map_err(|e| e.to_string())?;
+    let tags = stmt
+        .query_map(params![id], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    // 获取图片
+    let mut stmt = conn
+        .prepare("SELECT id, entry_id, path, is_primary FROM entry_images WHERE entry_id = ?")
+        .map_err(|e| e.to_string())?;
+    let images = stmt
+        .query_map(params![id], |row| {
+            Ok(EntryImage {
+                id: row.get(0)?,
+                entry_id: row.get(1)?,
+                path: row.get(2)?,
+                is_primary: row.get::<_, i32>(3)? != 0,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(Entry {
+        links,
+        tags,
+        images,
+        ..entry
+    })
+}
+
+#[tauri::command]
+fn create_entry(req: CreateEntryRequest) -> Result<Entry, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO entries (id, name, genre_id, creator, rating, review, tasting_date, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![id, req.name, req.genre_id, req.creator, req.rating, req.review, req.tasting_date, now, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // 插入链接
+    for link in &req.links {
+        let link_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO external_links (id, entry_id, url, label) VALUES (?1, ?2, ?3, ?4)",
+            params![link_id, id, link.url, link.label],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // 插入标签
+    for tag in &req.tags {
+        let tag_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO tags (id, entry_id, name) VALUES (?1, ?2, ?3)",
+            params![tag_id, id, tag],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    drop(conn);
+    get_entry(id)
+}
+
+#[tauri::command]
+fn update_entry(req: UpdateEntryRequest) -> Result<Entry, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let now = Utc::now().to_rfc3339();
+
+    conn.execute(
+        "UPDATE entries SET name = ?1, genre_id = ?2, creator = ?3, rating = ?4, review = ?5,
+         tasting_date = ?6, updated_at = ?7 WHERE id = ?8",
+        params![req.name, req.genre_id, req.creator, req.rating, req.review, req.tasting_date, now, req.id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // 更新链接：先删后插
+    conn.execute("DELETE FROM external_links WHERE entry_id = ?", params![req.id])
+        .map_err(|e| e.to_string())?;
+    for link in &req.links {
+        let link_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO external_links (id, entry_id, url, label) VALUES (?1, ?2, ?3, ?4)",
+            params![link_id, req.id, link.url, link.label],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // 更新标签：先删后插
+    conn.execute("DELETE FROM tags WHERE entry_id = ?", params![req.id])
+        .map_err(|e| e.to_string())?;
+    for tag in &req.tags {
+        let tag_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO tags (id, entry_id, name) VALUES (?1, ?2, ?3)",
+            params![tag_id, req.id, tag],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    drop(conn);
+    get_entry(req.id)
+}
+
+#[tauri::command]
+fn delete_entries(ids: Vec<String>) -> Result<(), String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    for id in &ids {
+        // 获取图片路径用于删除文件
+        let mut stmt = conn
+            .prepare("SELECT path FROM entry_images WHERE entry_id = ?")
+            .map_err(|e| e.to_string())?;
+        let paths: Vec<String> = stmt
+            .query_map(params![id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(stmt);
+
+        // 删除数据库记录（级联删除关联表）
+        conn.execute("DELETE FROM entries WHERE id = ?", params![id])
+            .map_err(|e| e.to_string())?;
+
+        // 删除本地图片文件
+        for path in paths {
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn get_entries_count() -> Result<i64, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+// ============================================================================
+// 图片管理命令
+// ============================================================================
+
+#[tauri::command]
+fn add_entry_image(entry_id: String, path: String, is_primary: bool) -> Result<EntryImage, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    // 如果设为主图，先取消其他主图
+    if is_primary {
+        conn.execute(
+            "UPDATE entry_images SET is_primary = 0 WHERE entry_id = ?",
+            params![entry_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO entry_images (id, entry_id, path, is_primary) VALUES (?1, ?2, ?3, ?4)",
+        params![id, entry_id, path, is_primary as i32],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(EntryImage {
+        id,
+        entry_id,
+        path,
+        is_primary,
+    })
+}
+
+#[tauri::command]
+fn delete_entry_image(id: String) -> Result<(), String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    // 获取图片路径
+    let path: Option<String> = conn
+        .query_row("SELECT path FROM entry_images WHERE id = ?", params![id], |row| row.get(0))
+        .ok();
+
+    conn.execute("DELETE FROM entry_images WHERE id = ?", params![id])
+        .map_err(|e| e.to_string())?;
+
+    // 删除文件
+    if let Some(p) = path {
+        std::fs::remove_file(&p).ok();
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_primary_image(id: String) -> Result<(), String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    // 获取 entry_id
+    let entry_id: String = conn
+        .query_row("SELECT entry_id FROM entry_images WHERE id = ?", params![id], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+
+    // 取消该条目所有主图
+    conn.execute(
+        "UPDATE entry_images SET is_primary = 0 WHERE entry_id = ?",
+        params![entry_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // 设置新主图
+    conn.execute(
+        "UPDATE entry_images SET is_primary = 1 WHERE id = ?",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+// ============================================================================
+// 导出导入
+// ============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportEntry {
+    pub name: String,
+    pub genre_name: String,
+    pub creator: Option<String>,
+    pub rating: String,
+    pub review: String,
+    pub tasting_date: Option<String>,
+    pub links: Vec<ExternalLink>,
+    pub tags: Vec<String>,
+    pub images: Vec<String>,
+}
+
+#[tauri::command]
+fn export_entries(ids: Option<Vec<String>>, format: String, include_images: bool) -> Result<String, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    let sql = if let Some(ref entry_ids) = ids {
+        let placeholders: Vec<String> = entry_ids.iter().map(|_| "?".to_string()).collect();
+        format!(
+            "SELECT e.id, e.name, g.name, e.creator, e.rating, e.review, e.tasting_date, e.created_at, e.updated_at
+             FROM entries e JOIN genres g ON e.genre_id = g.id WHERE e.id IN ({})",
+            placeholders.join(",")
+        )
+    } else {
+        "SELECT e.id, e.name, g.name, e.creator, e.rating, e.review, e.tasting_date, e.created_at, e.updated_at
+         FROM entries e JOIN genres g ON e.genre_id = g.id".to_string()
+    };
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = ids.as_ref()
+        .map(|v| v.iter().map(|s| s as &dyn rusqlite::ToSql).collect())
+        .unwrap_or_default();
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+
+    let entries: Vec<(String, String, String, Option<String>, String, String, Option<String>, String, String)> = stmt
+        .query_map(params_refs.as_slice(), |row| {
+            Ok((
+                row.get(0)?, // id
+                row.get(1)?, // name
+                row.get(2)?, // genre_name
+                row.get(3)?, // creator
+                row.get(4)?, // rating
+                row.get(5)?, // review
+                row.get(6)?, // tasting_date
+                row.get(7)?, // created_at
+                row.get(8)?, // updated_at
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    let mut export_entries = Vec::new();
+    for (id, name, genre_name, creator, rating, review, tasting_date, _, _) in entries {
+        let mut stmt = conn
+            .prepare("SELECT id, entry_id, url, label FROM external_links WHERE entry_id = ?")
+            .map_err(|e| e.to_string())?;
+        let links: Vec<ExternalLink> = stmt
+            .query_map(params![id], |row| Ok(ExternalLink {
+                id: row.get(0)?,
+                entry_id: row.get(1)?,
+                url: row.get(2)?,
+                label: row.get(3)?,
+            }))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(stmt);
+
+        let mut stmt = conn
+            .prepare("SELECT name FROM tags WHERE entry_id = ?")
+            .map_err(|e| e.to_string())?;
+        let tags: Vec<String> = stmt
+            .query_map(params![id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        let images: Vec<String> = if include_images {
+            let mut stmt = conn
+                .prepare("SELECT path FROM entry_images WHERE entry_id = ?")
+                .map_err(|e| e.to_string())?;
+            let result: Vec<String> = stmt
+                .query_map(params![id], |row| row.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            result
+        } else {
+            vec![]
+        };
+
+        export_entries.push(ExportEntry {
+            name,
+            genre_name,
+            creator,
+            rating,
+            review,
+            tasting_date,
+            links,
+            tags,
+            images,
+        });
+    }
+
+    let content = match format.as_str() {
+        "json" => serde_json::to_string_pretty(&export_entries).map_err(|e| e.to_string())?,
+        "csv" => {
+            let mut csv = String::from("名称,类型,创作者,等级,评价,品鉴日期,标签,链接\n");
+            for entry in &export_entries {
+                let tags_str = entry.tags.join(";");
+                let links_str = entry.links.iter().map(|l| format!("{}:{}", l.label, l.url)).collect::<Vec<_>>().join(";");
+                csv.push_str(&format!(
+                    "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"\n",
+                    entry.name, entry.genre_name,
+                    entry.creator.as_deref().unwrap_or(""),
+                    entry.rating, entry.review.replace("\"", "\"\""),
+                    entry.tasting_date.as_deref().unwrap_or(""),
+                    tags_str, links_str
+                ));
+            }
+            csv
+        }
+        _ => return Err("不支持的格式".to_string()),
+    };
+
+    let project_root = get_project_root();
+    let export_dir = project_root.join("exports");
+    std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
+
+    let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+    let export_path = export_dir.join(format!("export_{}.{}", timestamp, format));
+    std::fs::write(&export_path, &content).map_err(|e| e.to_string())?;
+
+    Ok(export_path.to_string_lossy().to_string())
+}
+
+// ============================================================================
+// 数据库备份
+// ============================================================================
+
+// ============================================================================
+// 封面爬取
+// ============================================================================
+
+/// 获取所有可用的封面数据源
+#[tauri::command]
+fn get_cover_sources() -> Vec<CoverSource> {
+    vec![
+        // 通用搜索引擎
+        CoverSource {
+            id: "bing_general".to_string(),
+            name: "Bing 图片搜索（通用）".to_string(),
+            source_type: "bing".to_string(),
+            usage: "general".to_string(),
+        },
+        // 影视
+        CoverSource {
+            id: "douban_movie".to_string(),
+            name: "豆瓣（影视）".to_string(),
+            source_type: "douban".to_string(),
+            usage: "movie".to_string(),
+        },
+        CoverSource {
+            id: "tmdb_movie".to_string(),
+            name: "TMDB（影视）".to_string(),
+            source_type: "tmdb".to_string(),
+            usage: "movie".to_string(),
+        },
+        // 动漫
+        CoverSource {
+            id: "bangumi_anime".to_string(),
+            name: "Bangumi（动漫）".to_string(),
+            source_type: "bangumi".to_string(),
+            usage: "anime".to_string(),
+        },
+        CoverSource {
+            id: "anilist_anime".to_string(),
+            name: "AniList（动漫）".to_string(),
+            source_type: "anilist".to_string(),
+            usage: "anime".to_string(),
+        },
+        // 图书
+        CoverSource {
+            id: "douban_book".to_string(),
+            name: "豆瓣（图书）".to_string(),
+            source_type: "douban".to_string(),
+            usage: "book".to_string(),
+        },
+        // 音乐
+        CoverSource {
+            id: "itunes_music".to_string(),
+            name: "iTunes（音乐）".to_string(),
+            source_type: "itunes".to_string(),
+            usage: "music".to_string(),
+        },
+        // 游戏
+        CoverSource {
+            id: "igdb_game".to_string(),
+            name: "IGDB（游戏）".to_string(),
+            source_type: "igdb".to_string(),
+            usage: "game".to_string(),
+        },
+        CoverSource {
+            id: "steam_game".to_string(),
+            name: "Steam（游戏）".to_string(),
+            source_type: "steam".to_string(),
+            usage: "game".to_string(),
+        },
+    ]
+}
+
+/// 爬取封面候选图片
+#[tauri::command]
+fn fetch_cover_candidates(
+    title: String,
+    creator: Option<String>,
+    source_id: String,
+) -> Result<Vec<CoverCandidate>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+    match source_id.as_str() {
+        "bing_general" => fetch_bing(&client, &title, creator.as_deref()),
+        "douban_movie" => fetch_douban(&client, &title, "movie", creator.as_deref()),
+        "douban_book" => fetch_douban(&client, &title, "book", creator.as_deref()),
+        "tmdb_movie" => fetch_tmdb_search(&client, &title, creator.as_deref()),
+        "bangumi_anime" => fetch_bangumi(&client, &title, creator.as_deref()),
+        "anilist_anime" => fetch_anilist(&client, &title, creator.as_deref()),
+        "itunes_music" => fetch_itunes(&client, &title, creator.as_deref()),
+        "igdb_game" => fetch_igdb_search(&client, &title, creator.as_deref()),
+        "steam_game" => fetch_steam_search(&client, &title, creator.as_deref()),
+        _ => Err(format!("不支持的来源: {}", source_id)),
+    }
+}
+
+// ---- 各数据源实现 ----
+
+fn fetch_bing(
+    client: &reqwest::blocking::Client,
+    title: &str,
+    creator: Option<&str>,
+) -> Result<Vec<CoverCandidate>, String> {
+    let query = match creator {
+        Some(c) if !c.trim().is_empty() => format!("{} {} 封面", title, c),
+        _ => format!("{} 封面", title),
+    };
+    let url = format!(
+        "https://www.bing.com/images/async?q={}&first=1&count=20&relp=20",
+        urlencoding::encode(&query)
+    );
+
+    let html = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("请求失败: {}", e))?
+        .text()
+        .map_err(|e| format!("读取失败: {}", e))?;
+
+    let document = scraper::Html::parse_document(&html);
+    let img_selector = scraper::Selector::parse("a.iusc").unwrap();
+
+    let mut results = Vec::new();
+    for el in document.select(&img_selector).take(15) {
+        if let Some(m) = el.value().attr("m") {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(m) {
+                if let Some(img_url) = json.get("murl").and_then(|v| v.as_str()) {
+                    let thumb = json
+                        .get("turl")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    results.push(CoverCandidate {
+                        url: img_url.to_string(),
+                        thumbnail_url: thumb,
+                        title: json
+                            .get("desc")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        source: "bing_general".to_string(),
+                        width: None,
+                        height: None,
+                    });
+                }
+            }
+        }
+    }
+    Ok(results)
+}
+
+fn fetch_douban(
+    client: &reqwest::blocking::Client,
+    title: &str,
+    cat: &str,
+    creator: Option<&str>,
+) -> Result<Vec<CoverCandidate>, String> {
+    let url = format!(
+        "https://search.douban.com/{}/subject_search?search_text={}&cat={}",
+        cat,
+        urlencoding::encode(title),
+        cat
+    );
+
+    let resp = client
+        .get(&url)
+        .header("Referer", "https://movie.douban.com/")
+        .send()
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let text = resp.text().map_err(|e| format!("读取失败: {}", e))?;
+
+    // 豆瓣搜索结果通常以 JSON 形式嵌入到页面中
+    let json_start = text.find("\"items\":[").or_else(|| text.find("\"subjects\":["));
+    let json_start = match json_start {
+        Some(i) => i,
+        None => return Ok(vec![]),
+    };
+
+    // 简易提取：从 [items] 之后开始匹配图片 URL
+    let mut results = Vec::new();
+    let section = &text[json_start..text.len().min(json_start + 50000)];
+    for cap in section.split("\"cover\":\"")
+        .skip(1)
+        .take(15)
+    {
+        if let Some(end) = cap.find('"') {
+            let cover = &cap[..end];
+            // 去除转义
+            let cover = cover.replace("\\/", "/");
+            results.push(CoverCandidate {
+                url: cover.clone(),
+                thumbnail_url: Some(cover),
+                title: None,
+                source: format!("douban_{}", cat),
+                width: None,
+                height: None,
+            });
+        }
+    }
+    Ok(results)
+}
+
+fn fetch_tmdb_search(
+    client: &reqwest::blocking::Client,
+    title: &str,
+    _creator: Option<&str>,
+) -> Result<Vec<CoverCandidate>, String> {
+    // TMDB 需要 API key，这里采用无 key 的图片代理搜索
+    // 简化实现：使用 imdb 搜索替代
+    let url = format!(
+        "https://www.imdb.com/find/?q={}&s=tt",
+        urlencoding::encode(title)
+    );
+    let html = client
+        .get(&url)
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .send()
+        .map_err(|e| format!("请求失败: {}", e))?
+        .text()
+        .map_err(|e| format!("读取失败: {}", e))?;
+
+    let document = scraper::Html::parse_document(&html);
+    let img_sel = scraper::Selector::parse("img.ipc-image").unwrap();
+
+    let mut results = Vec::new();
+    for el in document.select(&img_sel).take(15) {
+        if let Some(src) = el.value().attr("src") {
+            // IMDB 缩略图 base64 编码时跳过
+            if src.starts_with("data:") {
+                continue;
+            }
+            // 把小图 URL 替换为较高分辨率
+            let hi = src.replace("._V1_", "._V1_QL75_");
+            results.push(CoverCandidate {
+                url: hi.clone(),
+                thumbnail_url: Some(src.to_string()),
+                title: None,
+                source: "tmdb_movie".to_string(),
+                width: None,
+                height: None,
+            });
+        }
+    }
+    Ok(results)
+}
+
+fn fetch_bangumi(
+    client: &reqwest::blocking::Client,
+    title: &str,
+    _creator: Option<&str>,
+) -> Result<Vec<CoverCandidate>, String> {
+    let url = format!(
+        "https://api.bgm.tv/v0/search/subjects?limit=15",
+    );
+    let body = serde_json::json!({
+        "keyword": title,
+        "filter": { "type": [2] }  // 2 = 动画
+    });
+
+    let resp = client
+        .post(&url)
+        .header("User-Agent", "PreferenceDatabase/0.1")
+        .json(&body)
+        .send()
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let json: serde_json::Value = resp.json().map_err(|e| format!("解析失败: {}", e))?;
+    let mut results = Vec::new();
+    if let Some(list) = json.get("data").and_then(|d| d.as_array()) {
+        for item in list {
+            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let image = item.get("image").and_then(|v| v.as_str());
+            if let Some(img) = image {
+                results.push(CoverCandidate {
+                    url: img.to_string(),
+                    thumbnail_url: Some(img.to_string()),
+                    title: Some(name.to_string()),
+                    source: "bangumi_anime".to_string(),
+                    width: None,
+                    height: None,
+                });
+            }
+        }
+    }
+    Ok(results)
+}
+
+fn fetch_anilist(
+    client: &reqwest::blocking::Client,
+    title: &str,
+    _creator: Option<&str>,
+) -> Result<Vec<CoverCandidate>, String> {
+    let query = r#"
+        query ($search: String) {
+            Page(perPage: 15) {
+                media(search: $search, type: ANIME) {
+                    title { romaji english }
+                    coverImage { large medium }
+                }
+            }
+        }
+    "#;
+    let body = serde_json::json!({
+        "query": query,
+        "variables": { "search": title }
+    });
+
+    let resp = client
+        .post("https://graphql.anilist.co")
+        .json(&body)
+        .send()
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let json: serde_json::Value = resp.json().map_err(|e| format!("解析失败: {}", e))?;
+    let mut results = Vec::new();
+    if let Some(media) = json
+        .get("data")
+        .and_then(|d| d.get("Page"))
+        .and_then(|p| p.get("media"))
+        .and_then(|m| m.as_array())
+    {
+        for item in media {
+            let cover = item
+                .get("coverImage")
+                .and_then(|c| c.get("large"))
+                .and_then(|v| v.as_str());
+            let thumb = item
+                .get("coverImage")
+                .and_then(|c| c.get("medium"))
+                .and_then(|v| v.as_str());
+            if let Some(img) = cover {
+                results.push(CoverCandidate {
+                    url: img.to_string(),
+                    thumbnail_url: thumb.map(|s| s.to_string()),
+                    title: None,
+                    source: "anilist_anime".to_string(),
+                    width: None,
+                    height: None,
+                });
+            }
+        }
+    }
+    Ok(results)
+}
+
+fn fetch_itunes(
+    client: &reqwest::blocking::Client,
+    title: &str,
+    creator: Option<&str>,
+) -> Result<Vec<CoverCandidate>, String> {
+    let mut query = title.to_string();
+    if let Some(c) = creator {
+        query.push(' ');
+        query.push_str(c);
+    }
+    let url = format!(
+        "https://itunes.apple.com/search?term={}&media=music&entity=album&limit=15",
+        urlencoding::encode(&query)
+    );
+
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("请求失败: {}", e))?;
+    let json: serde_json::Value = resp.json().map_err(|e| format!("解析失败: {}", e))?;
+
+    let mut results = Vec::new();
+    if let Some(list) = json.get("results").and_then(|r| r.as_array()) {
+        for item in list {
+            if let Some(art) = item.get("artworkUrl100").and_then(|v| v.as_str()) {
+                // 100x100 -> 600x600
+                let hi = art.replace("100x100bb", "600x600bb");
+                results.push(CoverCandidate {
+                    url: hi.clone(),
+                    thumbnail_url: Some(art.to_string()),
+                    title: item
+                        .get("collectionName")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    source: "itunes_music".to_string(),
+                    width: None,
+                    height: None,
+                });
+            }
+        }
+    }
+    Ok(results)
+}
+
+fn fetch_igdb_search(
+    client: &reqwest::blocking::Client,
+    title: &str,
+    _creator: Option<&str>,
+) -> Result<Vec<CoverCandidate>, String> {
+    // IGDB 需要 API key, 使用 Steam 商店搜索替代
+    fetch_steam_search(client, title, _creator)
+}
+
+fn fetch_steam_search(
+    client: &reqwest::blocking::Client,
+    title: &str,
+    _creator: Option<&str>,
+) -> Result<Vec<CoverCandidate>, String> {
+    // Steam 搜索 API
+    let url = format!(
+        "https://store.steampowered.com/api/storesearch/?term={}&cc=cn&l=schinese",
+        urlencoding::encode(title)
+    );
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("请求失败: {}", e))?;
+    let json: serde_json::Value = resp.json().map_err(|e| format!("解析失败: {}", e))?;
+
+    let mut results = Vec::new();
+    if let Some(list) = json.get("items").and_then(|i| i.as_array()) {
+        for item in list {
+            let tiny = item
+                .get("tiny_image")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if let Some(t) = &tiny {
+                results.push(CoverCandidate {
+                    url: t.clone(),
+                    thumbnail_url: tiny.clone(),
+                    title: item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    source: "steam_game".to_string(),
+                    width: None,
+                    height: None,
+                });
+            }
+        }
+    }
+    Ok(results)
+}
+
+// ---- 封面下载 ----
+
+/// 下载封面图片到本地项目 resource/cover_image 目录
+#[tauri::command]
+fn download_cover(
+    url: String,
+    title: String,
+    creator: Option<String>,
+) -> Result<String, String> {
+    let title_clean = sanitize_filename(&title);
+    let creator_clean = match creator {
+        Some(c) if !c.trim().is_empty() => format!("_{}", sanitize_filename(c.trim())),
+        _ => String::new(),
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("创建客户端失败: {}", e))?;
+
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("下载失败: {}", e))?;
+    let bytes = resp.bytes().map_err(|e| format!("读取失败: {}", e))?;
+
+    // 从 URL 推断后缀
+    let ext = guess_ext_from_url(&url).unwrap_or_else(|| "jpg".to_string());
+
+    // 目标路径：项目根/resource/cover_image
+    let project_root = get_project_root();
+    let cover_dir = project_root.join("resource").join("cover_image");
+    std::fs::create_dir_all(&cover_dir).map_err(|e| format!("创建目录失败: {}", e))?;
+
+    // 处理文件名冲突：同名时附加 (1), (2)...
+    let base = format!("{}{}.{}", title_clean, creator_clean, ext);
+    let mut target = cover_dir.join(&base);
+    let mut counter = 1u32;
+    while target.exists() {
+        let stem = format!("{}{} ({}).{}", title_clean, creator_clean, counter, ext);
+        target = cover_dir.join(stem);
+        counter += 1;
+    }
+
+    std::fs::write(&target, &bytes).map_err(|e| format!("写入失败: {}", e))?;
+
+    Ok(target.to_string_lossy().to_string())
+}
+
+/// 处理拖入的本地图片：复制到 cover_image 目录并重命名
+#[tauri::command]
+fn import_local_image(source_path: String, title: String, creator: Option<String>) -> Result<String, String> {
+    // 获取文件后缀
+    let ext = std::path::Path::new(&source_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_else(|| "jpg".to_string());
+
+    // 清理文件名
+    let title_clean = if title.is_empty() {
+        "未命名".to_string()
+    } else {
+        sanitize_filename(&title)
+    };
+    let creator_clean = creator
+        .as_ref()
+        .filter(|c| !c.is_empty())
+        .map(|c| sanitize_filename(c))
+        .unwrap_or_else(|| "未知作者".to_string());
+
+    // 目标目录
+    let project_root = get_project_root();
+    let cover_dir = project_root.join("resource").join("cover_image");
+    std::fs::create_dir_all(&cover_dir).map_err(|e| format!("创建目录失败: {}", e))?;
+
+    // 构建文件名
+    let base = format!("{}_{}.{}", title_clean, creator_clean, ext);
+    let mut target = cover_dir.join(&base);
+    let mut counter = 1u32;
+    while target.exists() {
+        let stem = format!("{}_{} ({}).{}", title_clean, creator_clean, counter, ext);
+        target = cover_dir.join(stem);
+        counter += 1;
+    }
+
+    // 复制文件
+    std::fs::copy(&source_path, &target).map_err(|e| format!("复制文件失败: {}", e))?;
+
+    Ok(target.to_string_lossy().to_string())
+}
+
+fn sanitize_filename(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn guess_ext_from_url(url: &str) -> Option<String> {
+    // 去除 query string
+    let path = url.split('?').next().unwrap_or(url);
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())?;
+    let lower = ext.to_lowercase();
+    if ["jpg", "jpeg", "png", "webp", "gif", "bmp"].contains(&lower.as_str()) {
+        Some(if lower == "jpeg" { "jpg".to_string() } else { lower })
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+fn backup_database() -> Result<String, String> {
+    let db_path = get_db_path();
+    let project_root = get_project_root();
+    let backup_dir = project_root.join("backups");
+    std::fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
+
+    let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+    let backup_path = backup_dir.join(format!("backup_{}.db", timestamp));
+
+    std::fs::copy(&db_path, &backup_path).map_err(|e| e.to_string())?;
+
+    Ok(backup_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn get_image_base64(path: String) -> Result<String, String> {
+    eprintln!("[DEBUG] get_image_base64 called");
+    eprintln!("[DEBUG] Path: [{}]", path);
+    
+    let bytes = std::fs::read(&path).map_err(|e| {
+        eprintln!("[DEBUG] Read error: {}", e);
+        format!("读取图片失败: {}", e)
+    })?;
+    eprintln!("[DEBUG] Read {} bytes", bytes.len());
+    
+    let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    eprintln!("[DEBUG] Encoded {} chars", base64.len());
+    
+    // 返回 (base64, 实际字节数) 用于调试
+    eprintln!("[DEBUG] First 50 base64 chars: {}", &base64[..base64.len().min(50)]);
+    
+    Ok(base64)
+}
+
+// ============================================================================
+// 程序入口
+// ============================================================================
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // 初始化数据库
+    {
+        let _lock = DB.lock().expect("Failed to acquire database lock");
+        // 锁立即释放，确保其他命令可以正常获取
+    }
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            // 类型管理
+            get_genres,
+            create_genre,
+            delete_genre,
+            // 条目管理
+            get_entries,
+            get_entry,
+            create_entry,
+            update_entry,
+            delete_entries,
+            get_entries_count,
+            // 图片管理
+            add_entry_image,
+            delete_entry_image,
+            set_primary_image,
+            // 导出导入
+            export_entries,
+            // 备份
+            backup_database,
+            // 封面爬取
+            get_cover_sources,
+            fetch_cover_candidates,
+            download_cover,
+            import_local_image,
+            get_image_base64,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
