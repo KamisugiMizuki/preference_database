@@ -1118,26 +1118,66 @@ fn fetch_douban(
     Ok(results)
 }
 
+/// 读取 Bangumi Cookie 配置文件（config/bangumi_cookie.txt），未配置返回 None
+fn load_bangumi_cookie() -> Option<String> {
+    let path = get_project_root().join("config").join("bangumi_cookie.txt");
+    read_cookie_file(&path)
+}
+
+/// 从文件读取 cookie：去除首尾空白与换行，内容为空返回 None
+fn read_cookie_file(path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let cleaned = content.replace("\r", "").replace("\n", "");
+    let trimmed = cleaned.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 fn fetch_bangumi(
     client: &reqwest::blocking::Client,
     title: &str,
     _creator: Option<&str>,
 ) -> Result<Vec<CoverCandidate>, String> {
-    let url = format!(
-        "https://api.bgm.tv/v0/search/subjects?limit=15",
-    );
+    let cookie = load_bangumi_cookie();
+
+    match search_bangumi(client, title, cookie.as_deref()) {
+        Ok(list) => Ok(list),
+        Err(e) if cookie.is_some() => {
+            // Cookie 请求失败：回退为匿名搜索（不显示 R18）
+            eprintln!("[WARN] Bangumi cookie 请求失败，回退匿名搜索: {}", e);
+            search_bangumi(client, title, None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// 单次 Bangumi 搜索：配置了 cookie 时携带并允许 R18（nsfw: true）
+fn search_bangumi(
+    client: &reqwest::blocking::Client,
+    title: &str,
+    cookie: Option<&str>,
+) -> Result<Vec<CoverCandidate>, String> {
+    let mut filter = serde_json::json!({ "type": [2] }); // 2 = 动画
+    if cookie.is_some() {
+        filter["nsfw"] = serde_json::Value::Bool(true);
+    }
     let body = serde_json::json!({
         "keyword": title,
-        "filter": { "type": [2] }  // 2 = 动画
+        "filter": filter,
     });
 
-    let resp = client
-        .post(&url)
+    let mut req = client
+        .post("https://api.bgm.tv/v0/search/subjects?limit=15")
         .header("User-Agent", "PreferenceDatabase/0.1")
-        .json(&body)
-        .send()
-        .map_err(|e| format!("请求失败: {}", e))?;
+        .json(&body);
+    if let Some(c) = cookie {
+        req = req.header("Cookie", c);
+    }
 
+    let resp = req.send().map_err(|e| format!("请求失败: {}", e))?;
     let json: serde_json::Value = resp.json().map_err(|e| format!("解析失败: {}", e))?;
     let mut results = Vec::new();
     if let Some(list) = json.get("data").and_then(|d| d.as_array()) {
@@ -1552,5 +1592,26 @@ mod cover_tests {
         }
 
         assert!(failures.is_empty(), "失败源: {:?}", failures);
+    }
+
+    #[test]
+    fn test_read_cookie_file() {
+        let dir = std::env::temp_dir().join(format!("prefdb_cookie_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cookie.txt");
+
+        // 文件不存在 → None
+        assert!(read_cookie_file(&path).is_none());
+
+        // 空内容 → None
+        std::fs::write(&path, "  \n\t\n").unwrap();
+        assert!(read_cookie_file(&path).is_none());
+
+        // 多行 + 换行/回车 → 合并为单行
+        std::fs::write(&path, "chii_auth=abc123;\n chii_sid=xyz;\r\n").unwrap();
+        let v = read_cookie_file(&path).unwrap();
+        assert_eq!(v, "chii_auth=abc123; chii_sid=xyz;");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

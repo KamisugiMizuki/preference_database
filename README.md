@@ -72,6 +72,20 @@ npm run build && npm run tauri build
   - `resource/cover_image/` — 本地封面图片
 - 建议定期点击界面右上角 💾 备份数据库，并复制到外部存储
 
+## Bangumi Cookie 配置（可选）
+
+Bangumi API 对**未登录**请求隐藏全部 R18 内容。默认匿名搜索即可使用（不显示 R18）；如需在 Bangumi 源中搜索 R18 作品封面，可配置你的登录 Cookie：
+
+1. 浏览器登录 [bgm.tv](https://bgm.tv)（账号需注册满 30 天，否则服务端仍会隐藏 R18，此为网站策略，无法绕过）
+2. 按 F12 打开开发者工具 → 应用/存储 → Cookie → 找到 `bgm.tv` 域名的 Cookie
+3. 将所有 Cookie 以 `key=value; key2=value2` 格式（单行）保存到本地文件 `config/bangumi_cookie.txt`（文件不存在则始终匿名搜索）
+4. 该文件包含你的登录凭证，**不会提交到 Git**
+
+行为说明：
+
+- 配置了 Cookie：Bangumi 搜索请求携带 Cookie，R18 内容可见（账号满足条件时）
+- 未配置 Cookie，或带 Cookie 的请求失败：**自动回退为匿名 Bangumi 搜索**（不显示 R18），不影响正常使用
+
 ## 项目结构
 
 ```

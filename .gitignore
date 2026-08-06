@@ -44,5 +44,8 @@ exports/*
 resource/cover_image/*
 !resource/cover_image/README.md
 
+# Bangumi 登录 Cookie（本地配置，含账号凭证）
+config/bangumi_cookie.txt
+
 # 个人待玩/待读清单
 待玩列表.md
