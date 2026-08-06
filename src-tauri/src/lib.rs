@@ -967,16 +967,12 @@ fn fetch_cover_candidates(
     creator: Option<String>,
     source_id: String,
 ) -> Result<Vec<CoverCandidate>, String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    let client = build_client(15)?;
 
     match source_id.as_str() {
         "bing_general" => fetch_bing(&client, &title, creator.as_deref()),
-        "douban_movie" => fetch_douban(&client, &title, "movie", creator.as_deref()),
-        "douban_book" => fetch_douban(&client, &title, "book", creator.as_deref()),
+        "douban_movie" => fetch_douban(&client, &title, "movie"),
+        "douban_book" => fetch_douban(&client, &title, "book"),
         "tmdb_movie" => fetch_tmdb_search(&client, &title, creator.as_deref()),
         "bangumi_anime" => fetch_bangumi(&client, &title, creator.as_deref()),
         "anilist_anime" => fetch_anilist(&client, &title, creator.as_deref()),
@@ -988,6 +984,25 @@ fn fetch_cover_candidates(
 }
 
 // ---- 各数据源实现 ----
+
+/// 构建 HTTP 客户端：支持通过 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY 环境变量走代理（如 Clash），
+/// 未设置代理时直连。超时秒数由调用方指定。
+fn build_client(timeout_secs: u64) -> Result<reqwest::blocking::Client, String> {
+    let mut builder = reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .timeout(std::time::Duration::from_secs(timeout_secs));
+
+    let proxy_env = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()));
+    if let Some(proxy) = proxy_env {
+        if let Ok(p) = reqwest::Proxy::all(&proxy) {
+            builder = builder.proxy(p);
+        }
+    }
+
+    builder.build().map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
+}
 
 fn fetch_bing(
     client: &reqwest::blocking::Client,
@@ -1044,7 +1059,6 @@ fn fetch_douban(
     client: &reqwest::blocking::Client,
     title: &str,
     cat: &str,
-    creator: Option<&str>,
 ) -> Result<Vec<CoverCandidate>, String> {
     let url = format!(
         "https://search.douban.com/{}/subject_search?search_text={}&cat={}",
@@ -1055,38 +1069,57 @@ fn fetch_douban(
 
     let resp = client
         .get(&url)
-        .header("Referer", "https://movie.douban.com/")
+        .header("Referer", format!("https://{}.douban.com/", cat))
         .send()
         .map_err(|e| format!("请求失败: {}", e))?;
 
     let text = resp.text().map_err(|e| format!("读取失败: {}", e))?;
 
-    // 豆瓣搜索结果通常以 JSON 形式嵌入到页面中
-    let json_start = text.find("\"items\":[").or_else(|| text.find("\"subjects\":["));
-    let json_start = match json_start {
-        Some(i) => i,
-        None => return Ok(vec![]),
+    // 新版搜索页把结果嵌入 window.__DATA__ = {...}; JSON 中
+    let start = text
+        .find("window.__DATA__")
+        .ok_or_else(|| "未找到搜索结果".to_string())?;
+    let eq = text[start..]
+        .find('=')
+        .map(|i| start + i + 1)
+        .unwrap_or(start);
+    // JSON 结束位置：优先找 };，其次找 </script>，取较早者
+    let semi = text[eq..].find("};").map(|i| eq + i + 1);
+    let script = text[eq..].find("</script>").map(|i| eq + i);
+    let json_end = match (semi, script) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => text.len(),
     };
 
-    // 简易提取：从 [items] 之后开始匹配图片 URL
+    let json: serde_json::Value = serde_json::from_str(&text[eq..json_end])
+        .map_err(|e| format!("解析搜索结果失败: {}", e))?;
+
     let mut results = Vec::new();
-    let section = &text[json_start..text.len().min(json_start + 50000)];
-    for cap in section.split("\"cover\":\"")
-        .skip(1)
-        .take(15)
-    {
-        if let Some(end) = cap.find('"') {
-            let cover = &cap[..end];
-            // 去除转义
-            let cover = cover.replace("\\/", "/");
-            results.push(CoverCandidate {
-                url: cover.clone(),
-                thumbnail_url: Some(cover),
-                title: None,
-                source: format!("douban_{}", cat),
-                width: None,
-                height: None,
-            });
+    if let Some(items) = json.get("items").and_then(|v| v.as_array()) {
+        for item in items {
+            // 跳过 "搜索更多 xx" 之类的占位项
+            if item.get("tpl_name").and_then(|v| v.as_str()) == Some("search_more") {
+                continue;
+            }
+            if let Some(cover) = item.get("cover_url").and_then(|v| v.as_str()) {
+                // 小图尺寸替换为原图（movie: s_ratio_poster / book: m）
+                let hi = cover
+                    .replace("/s_ratio_poster/", "/l/")
+                    .replace("/subject/m/", "/subject/l/");
+                results.push(CoverCandidate {
+                    url: hi,
+                    thumbnail_url: Some(cover.to_string()),
+                    title: item
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    source: format!("douban_{}", cat),
+                    width: None,
+                    height: None,
+                });
+            }
         }
     }
     Ok(results)
@@ -1344,11 +1377,7 @@ fn download_cover(
         _ => String::new(),
     };
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("创建客户端失败: {}", e))?;
+    let client = build_client(30)?;
 
     let resp = client
         .get(&url)
@@ -1527,4 +1556,52 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ============================================================================
+// 封面数据源网络测试（cargo test -- --nocapture）
+// ============================================================================
+
+#[cfg(test)]
+mod cover_tests {
+    use super::*;
+
+    #[test]
+    fn test_all_cover_sources() {
+        let cases = [
+            ("bing_general", "尼尔：自动人形", None),
+            ("douban_movie", "秒速五厘米", Some("新海诚")),
+            ("douban_book", "人间失格", Some("太宰治")),
+            ("bangumi_anime", "葬送的芙莉莲", None),
+            ("anilist_anime", "Frieren", None),
+            ("itunes_music", "ヨルシカ", Some("Yorushika")),
+            ("steam_game", "Monster Hunter", None),
+            ("igdb_game", "Monster Hunter Wilds", None),
+        ];
+
+        let mut failures: Vec<String> = Vec::new();
+        for (src, title, creator) in cases {
+            match fetch_cover_candidates(
+                title.to_string(),
+                creator.map(|c| c.to_string()),
+                src.to_string(),
+            ) {
+                Ok(list) => {
+                    println!("[OK] {} ({}): {} candidates", src, title, list.len());
+                    if let Some(first) = list.first() {
+                        println!("     first url: {}", first.url);
+                    }
+                    if list.is_empty() {
+                        failures.push(format!("{} 返回 0 个候选", src));
+                    }
+                }
+                Err(e) => {
+                    println!("[FAIL] {} ({}): {}", src, title, e);
+                    failures.push(format!("{}: {}", src, e));
+                }
+            }
+        }
+
+        assert!(failures.is_empty(), "失败源: {:?}", failures);
+    }
 }
