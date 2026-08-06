@@ -156,6 +156,19 @@ function hasActiveFilter(): boolean {
   );
 }
 
+/// 类型专属色（与 styles.css --genre-* token 同步）
+const GENRE_COLORS: Record<string, string> = {
+  游戏: "#da77f2",
+  音乐: "#ff6b6b",
+  动漫: "#748ffc",
+  小说: "#69db7c",
+  影视剧: "#ffa94d",
+};
+
+function getGenreColor(name: string): string {
+  return GENRE_COLORS[name] || "#868e96";
+}
+
 /// 加载一批条目的主图 base64
 async function loadEntryImages(list: api.EntrySummary[]): Promise<(string | null)[]> {
   return Promise.all(
@@ -186,7 +199,9 @@ function renderEntryCards(list: api.EntrySummary[], images: (string | null)[], a
       ${
         images[idx]
           ? `<img class="entry-card-image" src="${images[idx]}" alt="${e.name}" />`
-          : `<div class="entry-card-placeholder">${getGenreIcon(e.genre_name)}</div>`
+          : `<div class="entry-card-placeholder" style="background:${getGenreColor(
+              e.genre_name
+            )}22;color:${getGenreColor(e.genre_name)}">${getGenreIcon(e.genre_name)}</div>`
       }
       <div class="entry-card-content">
         <div class="entry-card-header">
@@ -438,12 +453,12 @@ async function generateShareCard(entry: Entry): Promise<string> {
   ctx.font = "bold 34px 'Microsoft YaHei', sans-serif";
   drawWrappedText(ctx, entry.name, 32, titleY, W - 64, 44, 2);
 
-  // 等级 + 类型/创作者/日期
+  // 等级 + 类型/创作者/日期（与主 UI rating 色保持一致：styles.css --rating-*）
   const ratingColors: Record<string, string> = {
     S: "#ff6b6b",
-    A: "#feca57",
-    B: "#74b9ff",
-    C: "#a29bfe",
+    A: "#ffa94d",
+    B: "#69db7c",
+    C: "#74c0fc",
   };
   ctx.fillStyle = ratingColors[entry.rating] || "#a6adc8";
   ctx.font = "bold 24px 'Microsoft YaHei', sans-serif";
@@ -711,7 +726,7 @@ async function populateEntryForm(entry: Entry) {
     btn.addEventListener("click", () => {
       const item = btn.closest(".image-item");
       if (item) {
-        console.log("[DEBUG] Remove existing image from DOM:", item.getAttribute("data-id"));
+        console.log("Remove existing image from DOM:", item.getAttribute("data-id"));
         item.remove();
       }
     });
@@ -809,10 +824,8 @@ function bindEvents() {
   const btnTheme = $("btn-theme");
   btnTheme.addEventListener("click", () => {
     const isDark = document.documentElement.getAttribute("data-theme") === "dark";
-    document.documentElement.setAttribute(
-      "data-theme",
-      isDark ? "" : "dark"
-    );
+    document.documentElement.setAttribute("data-theme", isDark ? "light" : "dark");
+    localStorage.setItem("prefdb-theme", isDark ? "light" : "dark");
     $("btn-theme").textContent = isDark ? "🌙" : "☀️";
   });
 
@@ -1516,7 +1529,6 @@ async function downloadAndAddCover(candidate: api.CoverCandidate) {
 }
 
 async function addImageToContainer(localPath: string) {
-  console.log("[DEBUG] addImageToContainer called with:", localPath);
   const container = $<HTMLDivElement>("images-container");
   const div = document.createElement("div");
   div.className = "image-item";
@@ -1525,13 +1537,12 @@ async function addImageToContainer(localPath: string) {
     const base64 = await api.getImageBase64(localPath);
     const ext = localPath.split(".").pop()?.toLowerCase() || "jpg";
     const imgSrc = `data:image/${ext};base64,${base64}`;
-    console.log("[DEBUG] Image loaded, base64 length:", base64.length);
     div.innerHTML = `
       <img src="${imgSrc}" />
       <button type="button" class="remove-btn">×</button>
     `;
   } catch (err) {
-    console.error("[DEBUG] Failed to load image:", localPath, err);
+    console.error("Failed to load image:", localPath, err);
     div.innerHTML = `
       <div class="image-placeholder">图片加载失败</div>
       <button type="button" class="remove-btn">×</button>
@@ -1551,11 +1562,18 @@ async function addImageToContainer(localPath: string) {
 // ============================================================================
 
 async function init() {
-  const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  if (isDark) {
+  // 主题初始化：localStorage 优先，其次系统偏好
+  const savedTheme = localStorage.getItem("prefdb-theme");
+  if (savedTheme === "dark") {
     document.documentElement.setAttribute("data-theme", "dark");
-    const btnTheme = document.getElementById("btn-theme");
-    if (btnTheme) btnTheme.textContent = "☀️";
+  } else if (savedTheme === "light") {
+    document.documentElement.setAttribute("data-theme", "light");
+  } else if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+    document.documentElement.setAttribute("data-theme", "dark");
+  }
+  const btnThemeInit = document.getElementById("btn-theme");
+  if (btnThemeInit && document.documentElement.getAttribute("data-theme") === "dark") {
+    btnThemeInit.textContent = "☀️";
   }
 
   // 全局 Esc 关闭最上层模态框（无障碍）
