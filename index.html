@@ -112,11 +112,11 @@
     </div>
 
     <!-- 模态框：新增/编辑作品 -->
-    <div id="modal-entry" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="modal-entry" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-content">
         <div class="modal-header">
           <h2 id="modal-title">新增作品</h2>
-          <button class="modal-close" data-modal="modal-entry">&times;</button>
+          <button class="modal-close" aria-label="关闭" data-modal="modal-entry">&times;</button>
         </div>
         <form id="entry-form">
           <input type="hidden" id="entry-id" />
@@ -173,11 +173,11 @@
     </div>
 
     <!-- 模态框：详情查看 -->
-    <div id="modal-detail" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="modal-detail" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="detail-title">
       <div class="modal-content modal-large">
         <div class="modal-header">
           <h2 id="detail-title">作品详情</h2>
-          <button class="modal-close" data-modal="modal-detail">&times;</button>
+          <button class="modal-close" aria-label="关闭" data-modal="modal-detail">&times;</button>
         </div>
         <div class="detail-content">
           <div class="detail-images">
@@ -205,11 +205,11 @@
     </div>
 
     <!-- 模态框：导出 -->
-    <div id="modal-export" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="modal-export" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-export-title">
       <div class="modal-content">
         <div class="modal-header">
-          <h2>导出作品</h2>
-          <button class="modal-close" data-modal="modal-export">&times;</button>
+          <h2 id="modal-export-title">导出作品</h2>
+          <button class="modal-close" aria-label="关闭" data-modal="modal-export">&times;</button>
         </div>
         <form id="export-form">
           <div class="form-row">
@@ -239,11 +239,11 @@
     </div>
 
     <!-- 模态框：确认删除/恢复 -->
-    <div id="modal-confirm" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="modal-confirm" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
       <div class="modal-content modal-small">
         <div class="modal-header">
           <h2 id="confirm-title">确认删除</h2>
-          <button class="modal-close" data-modal="modal-confirm">&times;</button>
+          <button class="modal-close" aria-label="关闭" data-modal="modal-confirm">&times;</button>
         </div>
         <p id="confirm-message">确定要删除吗？此操作不可撤销。</p>
         <div class="form-actions">
@@ -254,11 +254,11 @@
     </div>
 
     <!-- 模态框：添加类型 -->
-    <div id="modal-genre" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="modal-genre" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-genre-title">
       <div class="modal-content modal-small">
         <div class="modal-header">
-          <h2>添加类型</h2>
-          <button class="modal-close" data-modal="modal-genre">&times;</button>
+          <h2 id="modal-genre-title">添加类型</h2>
+          <button class="modal-close" aria-label="关闭" data-modal="modal-genre">&times;</button>
         </div>
         <form id="genre-form">
           <div class="form-row">
@@ -274,11 +274,11 @@
     </div>
 
     <!-- 模态框：选择封面数据源 -->
-    <div id="modal-cover-source" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="modal-cover-source" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-cover-source-title">
       <div class="modal-content modal-small">
         <div class="modal-header">
-          <h2>选择封面来源</h2>
-          <button class="modal-close" data-modal="modal-cover-source">&times;</button>
+          <h2 id="modal-cover-source-title">选择封面来源</h2>
+          <button class="modal-close" aria-label="关闭" data-modal="modal-cover-source">&times;</button>
         </div>
         <div class="form-row">
           <label>使用方式</label>
@@ -303,11 +303,11 @@
     </div>
 
     <!-- 模态框：选择封面图片 -->
-    <div id="modal-cover-pick" class="modal hidden" role="dialog" aria-modal="true">
+    <div id="modal-cover-pick" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-cover-pick-title">
       <div class="modal-content modal-large">
         <div class="modal-header">
-          <h2>选择封面</h2>
-          <button class="modal-close" data-modal="modal-cover-pick">&times;</button>
+          <h2 id="modal-cover-pick-title">选择封面</h2>
+          <button class="modal-close" aria-label="关闭" data-modal="modal-cover-pick">&times;</button>
         </div>
         <div class="cover-search-bar">
           <span id="cover-search-info"></span>

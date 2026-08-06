@@ -71,8 +71,17 @@ function showToast(message: string, type: "success" | "error" = "success") {
   }, 3000);
 }
 
+// 打开弹窗前记录焦点（关闭时还原，无障碍）
+let lastFocused: HTMLElement | null = null;
+
 function openModal(id: string) {
+  lastFocused = document.activeElement as HTMLElement | null;
   $(id).classList.remove("hidden");
+  // 焦点移入弹窗内第一个可聚焦元素
+  const focusable = $(id).querySelector<HTMLElement>(
+    'input:not([type="hidden"]), select, textarea, button, [tabindex]:not([tabindex="-1"])'
+  );
+  focusable?.focus();
 }
 
 function closeModal(id: string) {
@@ -92,6 +101,13 @@ function closeModal(id: string) {
   }
 
   $(id).classList.add("hidden");
+  // 无其他弹窗打开时还原焦点（无障碍）
+  const anyOpen = Array.from(document.querySelectorAll(".modal")).some(
+    (m) => !m.classList.contains("hidden")
+  );
+  if (!anyOpen) {
+    lastFocused?.focus?.();
+  }
   // 批量爬图中关闭选择弹窗 → 终止批量
   if (id === "modal-cover-pick" && batchResolve) {
     batchActive = false;
@@ -381,7 +397,9 @@ async function renderDetailModal(entry: Entry) {
       (img, idx) => `
     <img class="thumbnail ${primaryImage?.id === img.id ? "active" : ""}"
          src="${images[idx] || ""}"
-         data-path="${escapeHtml(img.path)}" />
+         data-path="${escapeHtml(img.path)}"
+         tabindex="0" role="button"
+         aria-label="查看第 ${idx + 1} 张图" />
   `
     )
     .join("");
@@ -407,6 +425,12 @@ async function renderDetailModal(entry: Entry) {
         : `<div class="placeholder">${getGenreIcon($("detail-genre").textContent || "")}</div>`;
       thumbnails.querySelectorAll(".thumbnail").forEach((t) => t.classList.remove("active"));
       thumb.classList.add("active");
+    });
+    thumb.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        thumb.dispatchEvent(new MouseEvent("click"));
+      }
     });
   });
 }
@@ -1378,7 +1402,7 @@ function renderCoverSourceList(batch = false) {
   listEl.innerHTML = filtered
     .map(
       (s) => `
-    <div class="source-item" data-id="${s.id}">
+    <div class="source-item" data-id="${s.id}" tabindex="0" role="button" aria-label="选择数据源：${s.name}">
       <div class="source-item-header">
         <span class="source-item-name">${s.name}</span>
         <span class="source-item-usage">${USAGE_LABELS[s.usage] || s.usage}</span>
@@ -1404,6 +1428,12 @@ function renderCoverSourceList(batch = false) {
         processBatchQueue();
       } else {
         fetchAndShowCandidates(id, source.name);
+      }
+    });
+    item.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        item.dispatchEvent(new MouseEvent("click"));
       }
     });
   });
@@ -1524,7 +1554,7 @@ function renderCoverCandidates(candidates: api.CoverCandidate[], sourceName: str
   grid.innerHTML = candidates
     .map(
       (c, idx) => `
-    <div class="cover-cell" data-idx="${idx}">
+    <div class="cover-cell" data-idx="${idx}" tabindex="0" role="button" aria-label="${c.title ? "选择封面：" + c.title : "选择封面 ${idx + 1}"}">
       <div class="cover-loading">加载中...</div>
       <div class="cover-source-tag">${sourceName}</div>
       ${c.title ? `<div class="cover-title">${c.title}</div>` : ""}
@@ -1561,6 +1591,12 @@ function renderCoverCandidates(candidates: api.CoverCandidate[], sourceName: str
         downloadAndAddCoverBatch(batchCurrentItem, candidate);
       } else {
         downloadAndAddCover(candidate);
+      }
+    });
+    cell.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        cell.dispatchEvent(new MouseEvent("click"));
       }
     });
   });
