@@ -6,6 +6,7 @@ import type {
   CreateEntryRequest,
   UpdateEntryRequest,
   SearchQuery,
+  ImportResult,
 } from "./types";
 
 export type { Genre, Entry, EntrySummary, CreateEntryRequest, UpdateEntryRequest, SearchQuery };
