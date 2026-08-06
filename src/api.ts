@@ -55,6 +55,17 @@ export async function getTastingYears(): Promise<number[]> {
   return invoke("get_tasting_years");
 }
 
+export interface Stats {
+  total: number;
+  rating_dist: [string, number][];
+  genre_dist: [string, number][];
+  year_dist: [string, number][];
+}
+
+export async function getStats(): Promise<Stats> {
+  return invoke("get_stats");
+}
+
 export async function addEntryImage(
   entryId: string,
   path: string,

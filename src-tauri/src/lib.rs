@@ -1808,6 +1808,74 @@ fn import_database(source_path: String) -> Result<(), String> {
     import_db_into(&source_path, &mut dst)
 }
 
+/// 统计面板数据
+#[derive(Debug, Clone, Serialize)]
+pub struct Stats {
+    pub total: i64,
+    pub rating_dist: Vec<(String, i64)>,
+    pub genre_dist: Vec<(String, i64)>,
+    pub year_dist: Vec<(String, i64)>,
+}
+
+#[tauri::command]
+fn get_stats() -> Result<Stats, String> {
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+
+    let rating_dist: Vec<(String, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT rating, COUNT(*) FROM entries GROUP BY rating ORDER BY rating")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    let genre_dist: Vec<(String, i64)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT g.name, COUNT(*) FROM entries e JOIN genres g ON e.genre_id = g.id
+                 GROUP BY g.name ORDER BY COUNT(*) DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    let year_dist: Vec<(String, i64)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT strftime('%Y', tasting_date), COUNT(*) FROM entries
+                 WHERE tasting_date IS NOT NULL AND tasting_date != ''
+                 GROUP BY 1 ORDER BY 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    Ok(Stats {
+        total,
+        rating_dist,
+        genre_dist,
+        year_dist,
+    })
+}
+
 /// 按名称查找类型，不存在则创建自定义类型
 fn find_or_create_genre(conn: &Connection, name: &str) -> Result<String, String> {
     let name = name.trim();
@@ -2053,6 +2121,7 @@ pub fn run() {
             get_entries_count,
             get_all_tags,
             get_tasting_years,
+            get_stats,
             // 图片管理
             add_entry_image,
             delete_entry_image,

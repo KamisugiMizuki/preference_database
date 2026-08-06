@@ -570,6 +570,72 @@ input, select, textarea {
 }
 
 /* ============================================================================
+   统计面板
+   ============================================================================ */
+.stats-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.stats-body h3 {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 18px 0 8px;
+}
+
+.stats-total {
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.stats-total strong {
+  color: var(--accent);
+  font-size: 20px;
+}
+
+.stats-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.stats-bar-label {
+  width: 90px;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.stats-bar-track {
+  flex: 1;
+  height: 14px;
+  background: var(--bg-tertiary);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.stats-bar-fill {
+  height: 100%;
+  border-radius: 7px;
+  transition: width 0.3s;
+}
+
+.stats-bar-count {
+  width: 36px;
+  color: var(--text-secondary);
+}
+
+.stats-empty {
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 6px 0;
+}
+
+/* ============================================================================
    空状态
    ============================================================================ */
 .empty-state {

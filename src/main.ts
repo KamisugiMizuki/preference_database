@@ -574,6 +574,37 @@ async function generateShareCard(entry: Entry): Promise<string> {
 }
 
 // ============================================================================
+// 统计面板
+// ============================================================================
+
+function renderStatsBars(
+  containerId: string,
+  data: [string, number][],
+  colorFn: (label: string) => string
+) {
+  const el = $<HTMLDivElement>(containerId);
+  if (data.length === 0) {
+    el.innerHTML = `<div class="stats-empty">暂无数据</div>`;
+    return;
+  }
+  const max = Math.max(1, ...data.map((d) => d[1]));
+  el.innerHTML = data
+    .map(
+      ([label, count]) => `
+    <div class="stats-bar-row">
+      <span class="stats-bar-label">${escapeHtml(label)}</span>
+      <div class="stats-bar-track">
+        <div class="stats-bar-fill" style="width:${((count / max) * 100).toFixed(1)}%;background:${colorFn(
+          label
+        )}"></div>
+      </div>
+      <span class="stats-bar-count">${count}</span>
+    </div>`
+    )
+    .join("");
+}
+
+// ============================================================================
 // 数据加载
 // ============================================================================
 
@@ -1179,6 +1210,46 @@ function bindEvents() {
     showCoverSourceModal(true);
   });
 
+  // 批量删除
+  $("btn-batch-delete").addEventListener("click", () => {
+    if (selectedEntryIds.size === 0) return;
+    const n = selectedEntryIds.size;
+    $("confirm-title").textContent = "批量删除";
+    $("btn-confirm-delete").textContent = "删除";
+    $("btn-confirm-delete").className = "danger-btn";
+    $("confirm-message").textContent = `确定删除选中的 ${n} 个作品吗？关联的封面图片将一并删除，此操作不可撤销。`;
+    confirmAction = async () => {
+      try {
+        await api.deleteEntries(Array.from(selectedEntryIds));
+        const deleted = selectedEntryIds.size;
+        selectedEntryIds.clear();
+        updateBatchButton();
+        showToast(`已删除 ${deleted} 个作品`);
+        loadEntries();
+      } catch (err) {
+        showToast("删除失败: " + formatError(err), "error");
+      }
+    };
+    openModal("modal-confirm");
+  });
+
+  // 统计面板
+  $("btn-stats").addEventListener("click", async () => {
+    try {
+      const stats = await api.getStats();
+      $("stats-total").textContent = String(stats.total);
+      renderStatsBars("stats-rating", stats.rating_dist, (v) => {
+        const colors: Record<string, string> = { S: "#ff6b6b", A: "#ffa94d", B: "#69db7c", C: "#74c0fc" };
+        return colors[v] || "#a6adc8";
+      });
+      renderStatsBars("stats-genre", stats.genre_dist, (v) => getGenreColor(v));
+      renderStatsBars("stats-year", stats.year_dist, () => "#a6adc8");
+      openModal("modal-stats");
+    } catch (err) {
+      showToast("统计加载失败: " + formatError(err), "error");
+    }
+  });
+
   // 批量快捷操作
   $("btn-cover-first").addEventListener("click", () => {
     if (batchCurrentCandidates.length === 0) {
@@ -1459,6 +1530,9 @@ function updateBatchButton() {
   const btn = $<HTMLButtonElement>("btn-batch-cover");
   btn.disabled = selectedEntryIds.size === 0;
   btn.title = selectedEntryIds.size > 0 ? `批量爬图（${selectedEntryIds.size} 条）` : "批量爬图";
+  const delBtn = $<HTMLButtonElement>("btn-batch-delete");
+  delBtn.disabled = selectedEntryIds.size === 0;
+  delBtn.title = selectedEntryIds.size > 0 ? `删除选中（${selectedEntryIds.size}）` : "批量删除";
 }
 
 /// 依次处理批量队列中的条目；用户每完成一条的选择后继续下一条
@@ -1702,6 +1776,7 @@ async function init() {
       "modal-entry",
       "modal-detail",
       "modal-export",
+      "modal-stats",
       "modal-confirm",
       "modal-genre",
     ];

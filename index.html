@@ -30,10 +30,12 @@
           <button id="btn-new" class="primary-btn">+ 新增</button>
           <span class="toolbar-sep"></span>
           <button aria-label="批量爬图" id="btn-batch-cover" class="icon-btn" title="批量爬图" disabled>🖼️</button>
+          <button aria-label="批量删除" id="btn-batch-delete" class="icon-btn" title="批量删除" disabled>🗑️</button>
           <button aria-label="导出" id="btn-export" class="icon-btn" title="导出">📤</button>
           <button aria-label="导入" id="btn-import" class="icon-btn" title="导入">📥</button>
           <button aria-label="备份数据库" id="btn-backup" class="icon-btn" title="备份数据库">💾</button>
           <button aria-label="恢复数据库" id="btn-restore" class="icon-btn" title="恢复数据库">↩️</button>
+          <button aria-label="统计" id="btn-stats" class="icon-btn" title="统计">📊</button>
           <button aria-label="切换主题" id="btn-theme" class="icon-btn" title="切换主题">🌙</button>
         </div>
       </header>
@@ -235,6 +237,25 @@
             <button type="submit" class="primary-btn">导出</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- 模态框：统计 -->
+    <div id="modal-stats" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-stats-title">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modal-stats-title">统计</h2>
+          <button class="modal-close" aria-label="关闭" data-modal="modal-stats">&times;</button>
+        </div>
+        <div class="stats-body">
+          <p class="stats-total">共 <strong id="stats-total">0</strong> 部作品</p>
+          <h3>等级分布</h3>
+          <div id="stats-rating" class="stats-bars"></div>
+          <h3>类型分布</h3>
+          <div id="stats-genre" class="stats-bars"></div>
+          <h3>品鉴年份</h3>
+          <div id="stats-year" class="stats-bars"></div>
+        </div>
       </div>
     </div>
 
