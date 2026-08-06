@@ -472,7 +472,8 @@ fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
         _ => "e.updated_at".to_string(),
     };
     let sort_dir = if query.sort_order == "asc" { "ASC" } else { "DESC" };
-    sql.push_str(&format!(" ORDER BY {} {}", sort_expr, sort_dir));
+    // 次级键 e.id 保证同值区间分页稳定（避免 LIMIT/OFFSET 重复或丢条目）
+    sql.push_str(&format!(" ORDER BY {} {}, e.id {}", sort_expr, sort_dir, sort_dir));
 
     // 分页
     sql.push_str(&format!(" LIMIT {} OFFSET {}", query.limit, query.offset));
@@ -985,7 +986,11 @@ fn export_entries(
     }
 
     let project_root = get_project_root();
-    let export_dir = project_root.join("exports");
+    let export_root = project_root.join("exports");
+    std::fs::create_dir_all(&export_root).map_err(|e| e.to_string())?;
+    // 每次导出放入独立时间戳子目录，避免 cover_N.jpg 被下一次导出静默覆盖（损坏旧导出文件的图片引用）
+    let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+    let export_dir = export_root.join(format!("export_{}", timestamp));
     std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
 
     let content = match format.as_str() {
@@ -997,11 +1002,14 @@ fn export_entries(
                 let links_str = entry.links.iter().map(|l| format!("{}:{}", l.label, l.url)).collect::<Vec<_>>().join(";");
                 csv.push_str(&format!(
                     "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"\n",
-                    entry.name, entry.genre_name,
-                    entry.creator.as_deref().unwrap_or(""),
-                    entry.rating, entry.review.replace("\"", "\"\""),
-                    entry.tasting_date.as_deref().unwrap_or(""),
-                    tags_str, links_str
+                    entry.name.replace('"', "\"\""),
+                    entry.genre_name.replace('"', "\"\""),
+                    entry.creator.as_deref().unwrap_or("").replace('"', "\"\""),
+                    entry.rating,
+                    entry.review.replace('"', "\"\""),
+                    entry.tasting_date.as_deref().unwrap_or("").replace('"', "\"\""),
+                    tags_str.replace('"', "\"\""),
+                    links_str.replace('"', "\"\"")
                 ));
             }
             csv
@@ -1111,10 +1119,9 @@ fn export_entries(
         _ => return Err("不支持的格式".to_string()),
     };
 
-    // 保存文件（markdown 用 .md 后缀）
+    // 保存文件（markdown 用 .md 后缀；文件位于本次导出的时间戳子目录内）
     let ext = if format.as_str() == "markdown" { "md" } else { format.as_str() };
-    let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
-    let export_path = export_dir.join(format!("export_{}.{}", timestamp, ext));
+    let export_path = export_dir.join(format!("export.{}", ext));
     std::fs::write(&export_path, &content).map_err(|e| e.to_string())?;
 
     Ok(export_path.to_string_lossy().to_string())
@@ -1766,6 +1773,20 @@ fn backup_database() -> Result<String, String> {
     let backup_path = backup_dir.join(format!("backup_{}.db", timestamp));
 
     std::fs::copy(&db_path, &backup_path).map_err(|e| e.to_string())?;
+
+    // 清理旧备份：只保留最近 20 份（含关闭时自动备份，防止无限累积）
+    if let Ok(entries) = std::fs::read_dir(&backup_dir) {
+        let mut backups: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".db"))
+            .collect();
+        backups.sort_by_key(|e| e.file_name());
+        if backups.len() > 20 {
+            for old in backups.iter().take(backups.len() - 20) {
+                let _ = std::fs::remove_file(old.path());
+            }
+        }
+    }
 
     Ok(backup_path.to_string_lossy().to_string())
 }

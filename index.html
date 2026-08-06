@@ -36,6 +36,7 @@
           <button aria-label="备份数据库" id="btn-backup" class="icon-btn" title="备份数据库">💾</button>
           <button aria-label="恢复数据库" id="btn-restore" class="icon-btn" title="恢复数据库">↩️</button>
           <button aria-label="统计" id="btn-stats" class="icon-btn" title="统计">📊</button>
+          <button aria-label="帮助" id="btn-about" class="icon-btn" title="帮助与快捷键">❓</button>
           <button aria-label="切换主题" id="btn-theme" class="icon-btn" title="切换主题">🌙</button>
         </div>
       </header>
@@ -88,7 +89,7 @@
           <div class="content-header">
             <span id="entry-count">共 0 条作品</span>
             <span id="selection-info" class="selection-info hidden">
-              已选 <strong id="selection-count">0</strong> 项
+              已选 <strong id="selection-count">0</strong> 条
               <button type="button" id="btn-clear-selection" class="text-btn">清除</button>
             </span>
             <div class="view-toggle">
@@ -282,6 +283,31 @@
       </div>
     </div>
 
+    <!-- 模态框：关于/帮助 -->
+    <div id="modal-about" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-about-title">
+      <div class="modal-content modal-small">
+        <div class="modal-header">
+          <h2 id="modal-about-title">帮助与快捷键</h2>
+          <button class="modal-close" aria-label="关闭" data-modal="modal-about">&times;</button>
+        </div>
+        <div class="about-body">
+          <h3>快捷键</h3>
+          <ul>
+            <li><kbd>Ctrl</kbd> + <kbd>N</kbd> — 新增作品</li>
+            <li><kbd>Ctrl</kbd> + <kbd>F</kbd> — 聚焦搜索</li>
+            <li><kbd>Esc</kbd> — 关闭当前弹窗</li>
+          </ul>
+          <h3>评价等级</h3>
+          <p>S / A / B / C 无固定标准，按你自己的品鉴习惯使用（例如 S=封神、A=佳作、B=还行、C=弃）</p>
+          <h3>数据位置</h3>
+          <p>数据库与备份存放在程序目录下（<code>database/</code> 与 <code>backups/</code>），完全本地离线，关闭程序时自动备份（保留最近 20 份）。</p>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="secondary-btn" data-modal="modal-about">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 模态框：确认删除/恢复 -->
     <div id="modal-confirm" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
       <div class="modal-content modal-small">
@@ -354,7 +380,7 @@
           <button class="modal-close" aria-label="关闭" data-modal="modal-cover-pick">&times;</button>
         </div>
         <div class="cover-search-bar">
-          <span id="cover-search-info"></span>
+          <span id="cover-search-info" aria-live="polite"></span>
           <button type="button" id="btn-cover-first" class="text-btn hidden">使用第一张</button>
           <button type="button" id="btn-cover-skip" class="text-btn hidden">跳过本条目</button>
           <button type="button" id="btn-cover-skip-all" class="text-btn hidden">全部跳过</button>

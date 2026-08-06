@@ -296,7 +296,9 @@ function renderEntryCards(list: api.EntrySummary[], append = false) {
       const id = card.getAttribute("data-id")!;
       showEntryDetail(id);
     });
-    card.addEventListener("keydown", (ev) => {
+    card.addEventListener("keydown", (ev: KeyboardEvent) => {
+      // 焦点在内部 checkbox 上时按键归原生控件处理（键盘勾选），不触发打开详情
+      if (ev.target !== card) return;
       if (ev.key === "Enter" || ev.key === " ") {
         ev.preventDefault();
         const id = card.getAttribute("data-id")!;
@@ -407,15 +409,17 @@ async function renderDetailModal(entry: Entry) {
   }
 
   const thumbnails = $("detail-thumbnails");
-  thumbnails.innerHTML = entry.images
+  const thumbnailsEl = $<HTMLDivElement>("detail-thumbnails");
+  thumbnailsEl.innerHTML = entry.images
     .map(
-      (img, idx) => `
-    <img class="thumbnail ${primaryImage?.id === img.id ? "active" : ""}"
-         src="${images[idx] || ""}"
+      (img, idx) =>
+        images[idx]
+          ? `<img class="thumbnail ${primaryImage?.id === img.id ? "active" : ""}"
+         src="${images[idx]}"
          data-path="${escapeHtml(img.path)}"
          tabindex="0" role="button"
-         aria-label="查看第 ${idx + 1} 张图" />
-  `
+         aria-label="查看第 ${idx + 1} 张图" />`
+          : `<div class="thumbnail thumb-broken" role="img" aria-label="第 ${idx + 1} 张图不可用">✕</div>`
     )
     .join("");
 
@@ -719,7 +723,7 @@ async function loadYearFilter() {
   }
 }
 
-async function loadEntries(append = false) {
+async function loadEntries(append = false, opts: { clearSelection?: boolean } = {}) {
   const loadingEl = $<HTMLDivElement>("loading");
   const entryListEl = $<HTMLDivElement>("entry-list");
   const emptyStateEl = $<HTMLDivElement>("empty-state");
@@ -749,9 +753,11 @@ async function loadEntries(append = false) {
     } else {
       totalCount = count;
       entries = newEntries;
-      // 筛选/搜索/排序变化时清空隐藏的选中项，避免批量删除误删不可见条目
-      selectedEntryIds.clear();
-      updateBatchButton();
+      // 仅筛选/搜索变化时清空选中（排序变化保留多选，避免误伤进行中的勾选）
+      if (opts.clearSelection !== false) {
+        selectedEntryIds.clear();
+        updateBatchButton();
+      }
       await renderEntries();
       refreshStatsIfOpen(); // 统计面板开着时同步当前筛选口径
     }
@@ -1173,15 +1179,15 @@ function bindEvents() {
     }
   });
 
-  // 排序
+  // 排序（不改变结果集，保留当前多选）
   $("sort-by").addEventListener("change", () => {
     currentSearchQuery.sort_by = $<HTMLSelectElement>("sort-by").value;
-    loadEntries();
+    loadEntries(false, { clearSelection: false });
   });
 
   $("sort-order").addEventListener("change", () => {
     currentSearchQuery.sort_order = $<HTMLSelectElement>("sort-order").value;
-    loadEntries();
+    loadEntries(false, { clearSelection: false });
   });
 
   // 等级筛选
@@ -1311,6 +1317,11 @@ function bindEvents() {
       }
     };
     openModal("modal-confirm");
+  });
+
+  // 帮助与快捷键
+  $("btn-about").addEventListener("click", () => {
+    openModal("modal-about");
   });
 
   // 统计面板（与当前筛选联动；打开时先显示加载态，筛选变化时自动刷新）
@@ -1461,6 +1472,7 @@ function bindEvents() {
         showToast("正在导入数据库...");
         await api.importDatabase(selected);
         showToast("数据库导入成功");
+        imageCache.clear(); // 恢复后清除图片缓存，避免引用旧数据
         await loadGenres();
         await loadTagFilter();
         await loadYearFilter();
@@ -1644,7 +1656,7 @@ async function processBatchQueue() {
     const infoEl = $("cover-search-info");
     infoEl.textContent = `（${batchIndex}/${batchItems.length}）${item.name} · ${batchSourceName}`;
     const grid = $("cover-candidates");
-    grid.innerHTML = `<div class="cover-empty">🔍 正在搜索《${item.name}》的封面...</div>`;
+    grid.innerHTML = `<div class="cover-empty">🔍 正在搜索《${escapeHtml(item.name)}》的封面...</div>`;
     openModal("modal-cover-pick");
 
     try {
@@ -1653,7 +1665,7 @@ async function processBatchQueue() {
       renderCoverCandidates(candidates, batchSourceName);
     } catch (err) {
       console.error("Batch fetch failed:", item.name, err);
-      grid.innerHTML = `<div class="cover-empty">搜索失败：${formatError(err)}</div>`;
+      grid.innerHTML = `<div class="cover-empty">搜索失败：${escapeHtml(formatError(err))}</div>`;
     }
 
     // 等待用户操作（点图 / 使用第一张 / 跳过 / 全部跳过 / 关闭）
@@ -1724,7 +1736,7 @@ async function fetchAndShowCandidates(sourceId: string, sourceName: string) {
     renderCoverCandidates(candidates, sourceName);
   } catch (err) {
     console.error("Fetch cover candidates failed:", err);
-    grid.innerHTML = `<div class="cover-empty">搜索失败：${formatError(err)}</div>`;
+    grid.innerHTML = `<div class="cover-empty">搜索失败：${escapeHtml(formatError(err))}</div>`;
   }
 }
 
@@ -1738,10 +1750,10 @@ function renderCoverCandidates(candidates: api.CoverCandidate[], sourceName: str
   grid.innerHTML = candidates
     .map(
       (c, idx) => `
-    <div class="cover-cell" data-idx="${idx}" tabindex="0" role="button" aria-label="${c.title ? "选择封面：" + c.title : "选择封面 第" + (idx + 1) + "张"}">
+    <div class="cover-cell" data-idx="${idx}" tabindex="0" role="button" aria-label="${c.title ? "选择封面：" + escapeHtml(c.title) : "选择封面 第" + (idx + 1) + "张"}">
       <div class="cover-loading">加载中...</div>
-      <div class="cover-source-tag">${sourceName}</div>
-      ${c.title ? `<div class="cover-title">${c.title}</div>` : ""}
+      <div class="cover-source-tag">${escapeHtml(sourceName)}</div>
+      ${c.title ? `<div class="cover-title">${escapeHtml(c.title)}</div>` : ""}
     </div>
   `
     )
@@ -1879,6 +1891,7 @@ async function init() {
       "modal-export",
       "modal-stats",
       "modal-share-preview",
+      "modal-about",
       "modal-confirm",
       "modal-genre",
     ];

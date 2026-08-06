@@ -622,6 +622,40 @@ input, select, textarea {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
 }
 
+.about-body h3 {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 14px 0 6px;
+}
+
+.about-body p,
+.about-body li {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+
+.about-body ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.about-body kbd {
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.about-body code {
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+  font-family: Consolas, monospace;
+}
+
 /* ============================================================================
    统计面板
    ============================================================================ */
@@ -883,6 +917,15 @@ textarea:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.thumb-broken {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-size: 14px;
 }
 
 .main-image {
