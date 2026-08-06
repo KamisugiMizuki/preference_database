@@ -62,6 +62,8 @@ function showToast(message: string, type: "success" | "error" = "success") {
   toastEl.textContent = message;
   toastEl.className = `toast ${type}`;
   toastEl.classList.remove("hidden");
+  toastEl.setAttribute("aria-live", "polite");
+  toastEl.setAttribute("role", "status");
   setTimeout(() => {
     toastEl.classList.add("hidden");
   }, 3000);
@@ -1555,6 +1557,26 @@ async function init() {
     const btnTheme = document.getElementById("btn-theme");
     if (btnTheme) btnTheme.textContent = "☀️";
   }
+
+  // 全局 Esc 关闭最上层模态框（无障碍）
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const modalIds = [
+      "modal-cover-pick",
+      "modal-cover-source",
+      "modal-entry",
+      "modal-detail",
+      "modal-export",
+      "modal-confirm",
+      "modal-genre",
+    ];
+    for (const id of modalIds) {
+      if (!$<HTMLDivElement>(id).classList.contains("hidden")) {
+        closeModal(id);
+        break;
+      }
+    }
+  });
 
   bindEvents();
   await loadGenres();

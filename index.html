@@ -23,17 +23,17 @@
               <option value="tags">标签</option>
               <option value="review">评价</option>
             </select>
-            <button id="search-btn" class="icon-btn" title="搜索">🔍</button>
+            <button aria-label="搜索" id="search-btn" class="icon-btn" title="搜索">🔍</button>
           </div>
         </div>
         <div class="toolbar-right">
           <button id="btn-new" class="primary-btn">+ 新增</button>
-          <button id="btn-batch-cover" class="icon-btn" title="批量爬图" disabled>🖼️</button>
-          <button id="btn-export" class="icon-btn" title="导出">📤</button>
-          <button id="btn-import" class="icon-btn" title="导入">📥</button>
-          <button id="btn-backup" class="icon-btn" title="备份数据库">💾</button>
-          <button id="btn-restore" class="icon-btn" title="恢复数据库">↩️</button>
-          <button id="btn-theme" class="icon-btn" title="切换主题">🌙</button>
+          <button aria-label="批量爬图" id="btn-batch-cover" class="icon-btn" title="批量爬图" disabled>🖼️</button>
+          <button aria-label="导出" id="btn-export" class="icon-btn" title="导出">📤</button>
+          <button aria-label="导入" id="btn-import" class="icon-btn" title="导入">📥</button>
+          <button aria-label="备份数据库" id="btn-backup" class="icon-btn" title="备份数据库">💾</button>
+          <button aria-label="恢复数据库" id="btn-restore" class="icon-btn" title="恢复数据库">↩️</button>
+          <button aria-label="切换主题" id="btn-theme" class="icon-btn" title="切换主题">🌙</button>
         </div>
       </header>
 
@@ -85,8 +85,8 @@
           <div class="content-header">
             <span id="entry-count">共 0 条作品</span>
             <div class="view-toggle">
-              <button id="view-cards" class="view-btn active" title="卡片视图">▦</button>
-              <button id="view-list" class="view-btn" title="列表视图">☰</button>
+              <button aria-label="卡片视图" id="view-cards" class="view-btn active" title="卡片视图">▦</button>
+              <button aria-label="列表视图" id="view-list" class="view-btn" title="列表视图">☰</button>
             </div>
           </div>
           <div id="entry-list" class="entry-list card-view"></div>
@@ -111,7 +111,7 @@
     </div>
 
     <!-- 模态框：新增/编辑作品 -->
-    <div id="modal-entry" class="modal hidden">
+    <div id="modal-entry" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content">
         <div class="modal-header">
           <h2 id="modal-title">新增作品</h2>
@@ -172,7 +172,7 @@
     </div>
 
     <!-- 模态框：详情查看 -->
-    <div id="modal-detail" class="modal hidden">
+    <div id="modal-detail" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content modal-large">
         <div class="modal-header">
           <h2 id="detail-title">作品详情</h2>
@@ -204,7 +204,7 @@
     </div>
 
     <!-- 模态框：导出 -->
-    <div id="modal-export" class="modal hidden">
+    <div id="modal-export" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content">
         <div class="modal-header">
           <h2>导出作品</h2>
@@ -238,7 +238,7 @@
     </div>
 
     <!-- 模态框：确认删除/恢复 -->
-    <div id="modal-confirm" class="modal hidden">
+    <div id="modal-confirm" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content modal-small">
         <div class="modal-header">
           <h2 id="confirm-title">确认删除</h2>
@@ -253,7 +253,7 @@
     </div>
 
     <!-- 模态框：添加类型 -->
-    <div id="modal-genre" class="modal hidden">
+    <div id="modal-genre" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content modal-small">
         <div class="modal-header">
           <h2>添加类型</h2>
@@ -273,7 +273,7 @@
     </div>
 
     <!-- 模态框：选择封面数据源 -->
-    <div id="modal-cover-source" class="modal hidden">
+    <div id="modal-cover-source" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content modal-small">
         <div class="modal-header">
           <h2>选择封面来源</h2>
@@ -302,7 +302,7 @@
     </div>
 
     <!-- 模态框：选择封面图片 -->
-    <div id="modal-cover-pick" class="modal hidden">
+    <div id="modal-cover-pick" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content modal-large">
         <div class="modal-header">
           <h2>选择封面</h2>

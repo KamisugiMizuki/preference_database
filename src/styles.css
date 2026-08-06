@@ -454,8 +454,8 @@ input, select, textarea {
   top: 8px;
   left: 8px;
   z-index: 3;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   cursor: pointer;
   accent-color: var(--accent, #4a9eff);
 }
@@ -713,6 +713,16 @@ form {
   outline: none;
 }
 
+/* 键盘焦点可见（无障碍） */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .form-row textarea {
   resize: vertical;
   min-height: 100px;
@@ -919,7 +929,8 @@ form {
   transition: opacity 0.2s;
 }
 
-.image-item:hover .remove-btn {
+.image-item:hover .remove-btn,
+.image-item:focus-within .remove-btn {
   opacity: 1;
 }
 
