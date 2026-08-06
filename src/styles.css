@@ -1016,11 +1016,6 @@ textarea:focus-visible,
   transition: border-color 0.2s, background-color 0.2s;
 }
 
-#images-container.drag-over {
-  border-color: #0078d4;
-  background-color: rgba(0, 120, 212, 0.05);
-}
-
 .image-item {
   position: relative;
   width: 80px;

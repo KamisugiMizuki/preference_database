@@ -1272,45 +1272,6 @@ function bindEvents() {
     }
   });
 
-  // 拖放图片到 images-container
-  const imagesContainer = $<HTMLDivElement>("images-container");
-  imagesContainer.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    imagesContainer.classList.add("drag-over");
-  });
-  imagesContainer.addEventListener("dragleave", () => {
-    imagesContainer.classList.remove("drag-over");
-  });
-  imagesContainer.addEventListener("drop", async (e) => {
-    e.preventDefault();
-    imagesContainer.classList.remove("drag-over");
-
-    const files = e.dataTransfer?.files;
-    if (!files || files.length === 0) return;
-
-    const title = $<HTMLInputElement>("entry-name").value.trim() || "未命名";
-    const creator = $<HTMLInputElement>("entry-creator").value.trim() || null;
-
-    for (const file of Array.from(files)) {
-      // 尝试获取文件路径
-      const filePath = (file as any).path;
-      if (!filePath) {
-        showToast("无法获取文件路径，请使用手动添加", "error");
-        continue;
-      }
-
-      try {
-        showToast("正在导入图片...");
-        const newPath = await api.importLocalImage(filePath, title, creator);
-        await addImageToContainer(newPath);
-        showToast("图片已导入");
-      } catch (err) {
-        console.error("Import image failed:", err);
-        showToast("导入失败: " + formatError(err), "error");
-      }
-    }
-  });
-
   // 清除选中（常驻入口）
   $("btn-clear-selection").addEventListener("click", () => {
     selectedEntryIds.clear();
