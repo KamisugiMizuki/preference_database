@@ -82,8 +82,8 @@ function closeModal(id: string) {
     batchResolve = null;
     r();
   }
-  // 批量模式下关闭来源选择弹窗 → 取消批量
-  if (id === "modal-cover-source" && batchActive) {
+  // 批量模式下关闭来源选择弹窗 → 取消批量（仅当尚未选中数据源；选源成功不触发）
+  if (id === "modal-cover-source" && batchActive && batchSourceId === "") {
     batchActive = false;
     selectedEntryIds.clear();
     updateBatchButton();
@@ -1357,10 +1357,13 @@ function renderCoverSourceList(batch = false) {
       const id = item.getAttribute("data-id")!;
       const source = coverSources.find((s) => s.id === id);
       if (!source) return;
-      closeModal("modal-cover-source");
       if (batch) {
+        // 先记录来源再关闭弹窗，避免 closeModal 的取消钩子误杀批量
         batchSourceId = id;
         batchSourceName = source.name;
+      }
+      closeModal("modal-cover-source");
+      if (batch) {
         processBatchQueue();
       } else {
         fetchAndShowCandidates(id, source.name);
@@ -1418,6 +1421,8 @@ async function processBatchQueue() {
   batchActive = false;
   batchCurrentItem = null;
   batchCurrentCandidates = [];
+  batchSourceId = "";
+  batchSourceName = "";
   $("btn-cover-change-source").classList.remove("hidden");
   $("btn-cover-first").classList.add("hidden");
   $("btn-cover-skip").classList.add("hidden");
