@@ -1,5 +1,5 @@
 import "./styles.css";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
 import type {
   Genre,
@@ -270,6 +270,135 @@ async function renderDetailModal(entry: Entry) {
       thumb.classList.add("active");
     });
   });
+}
+
+// ============================================================================
+// 分享卡片
+// ============================================================================
+
+function drawWrappedText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number,
+  maxLines: number
+): void {
+  let line = "";
+  let lines = 0;
+  let cy = y;
+  for (const ch of text) {
+    if (ch === "\n" || ctx.measureText(line + ch).width > maxWidth) {
+      ctx.fillText(line, x, cy);
+      line = "";
+      cy += lineHeight;
+      lines++;
+      if (lines >= maxLines) {
+        ctx.fillText("…", x, cy);
+        return;
+      }
+      if (ch === "\n") continue;
+    }
+    line += ch;
+  }
+  if (line) ctx.fillText(line, x, cy);
+}
+
+async function generateShareCard(entry: Entry): Promise<string> {
+  const W = 640;
+  const H = 880;
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d")!;
+
+  // 背景
+  ctx.fillStyle = "#181825";
+  ctx.fillRect(0, 0, W, H);
+
+  // 封面（顶部全宽，底部渐变融入背景）
+  let hasCover = false;
+  const primary = entry.images.find((i) => i.is_primary) || entry.images[0];
+  if (primary) {
+    try {
+      const b64 = await api.getImageBase64(primary.path);
+      const ext = primary.path.split(".").pop()?.toLowerCase() || "jpg";
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("封面加载失败"));
+        img.src = `data:image/${ext};base64,${b64}`;
+      });
+      const coverH = Math.min(400, H * 0.45);
+      const scale = Math.max(W / img.width, coverH / img.height);
+      const dw = img.width * scale;
+      const dh = img.height * scale;
+      ctx.drawImage(img, (W - dw) / 2, 0, dw, dh);
+      const grad = ctx.createLinearGradient(0, coverH - 120, 0, coverH);
+      grad.addColorStop(0, "rgba(24,24,37,0)");
+      grad.addColorStop(1, "rgba(24,24,37,1)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, coverH - 120, W, 120);
+      hasCover = true;
+    } catch {
+      // 封面加载失败，走占位布局
+    }
+  }
+
+  // 标题
+  const titleY = hasCover ? 456 : 80;
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 34px 'Microsoft YaHei', sans-serif";
+  drawWrappedText(ctx, entry.name, 32, titleY, W - 64, 44, 2);
+
+  // 等级 + 类型/创作者/日期
+  const ratingColors: Record<string, string> = {
+    S: "#ff6b6b",
+    A: "#feca57",
+    B: "#74b9ff",
+    C: "#a29bfe",
+  };
+  ctx.fillStyle = ratingColors[entry.rating] || "#a6adc8";
+  ctx.font = "bold 24px 'Microsoft YaHei', sans-serif";
+  ctx.fillText(entry.rating, 32, titleY + 54);
+  const genreName = genres.find((g) => g.id === entry.genre_id)?.name || "";
+  const metaText = `${genreName}${entry.creator ? " · " + entry.creator : ""}${
+    entry.tasting_date ? " · " + formatDate(entry.tasting_date) : ""
+  }`;
+  ctx.fillStyle = "#a6adc8";
+  ctx.font = "16px 'Microsoft YaHei', sans-serif";
+  ctx.fillText(metaText, 92, titleY + 54);
+
+  // 评价
+  ctx.fillStyle = "#cdd6f4";
+  ctx.font = "16px 'Microsoft YaHei', sans-serif";
+  drawWrappedText(ctx, entry.review, 32, titleY + 104, W - 64, 28, 12);
+
+  // 标签（圆角胶囊）
+  if (entry.tags.length > 0) {
+    const tagY = H - 78;
+    ctx.font = "14px 'Microsoft YaHei', sans-serif";
+    let tx = 32;
+    for (const tag of entry.tags.slice(0, 6)) {
+      const tw = ctx.measureText(tag).width + 24;
+      if (tx + tw > W - 32) break;
+      ctx.fillStyle = "#313244";
+      ctx.beginPath();
+      ctx.roundRect(tx, tagY - 18, tw, 26, 13);
+      ctx.fill();
+      ctx.fillStyle = "#cdd6f4";
+      ctx.fillText(tag, tx + 12, tagY);
+      tx += tw + 8;
+    }
+  }
+
+  // 水印
+  ctx.fillStyle = "#6c7086";
+  ctx.font = "13px 'Microsoft YaHei', sans-serif";
+  ctx.fillText("文艺作品品鉴 · Preference Database", 32, H - 26);
+
+  return canvas.toDataURL("image/png");
 }
 
 // ============================================================================
@@ -575,6 +704,26 @@ function bindEvents() {
     $("modal-title").textContent = "编辑作品";
     closeModal("modal-detail");
     openModal("modal-entry");
+  });
+
+  // 分享卡片
+  $("btn-share-card").addEventListener("click", async () => {
+    if (!currentEntry) return;
+    try {
+      showToast("正在生成分享卡片...");
+      const dataUrl = await generateShareCard(currentEntry);
+      const safeName = currentEntry.name.replace(/[\\/:*?"<>|]/g, "_");
+      const savePath = await save({
+        title: "保存分享卡片",
+        defaultPath: `${safeName}.png`,
+        filters: [{ name: "PNG 图片", extensions: ["png"] }],
+      });
+      if (!savePath) return;
+      await api.saveBase64Image(dataUrl, savePath);
+      showToast("分享卡片已保存");
+    } catch (err) {
+      showToast("生成失败: " + (err as Error).message, "error");
+    }
   });
 
   // 删除按钮

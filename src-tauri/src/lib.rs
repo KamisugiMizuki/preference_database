@@ -1965,22 +1965,23 @@ pub struct ImportResult {
 
 #[tauri::command]
 fn get_image_base64(path: String) -> Result<String, String> {
-    eprintln!("[DEBUG] get_image_base64 called");
-    eprintln!("[DEBUG] Path: [{}]", path);
-    
-    let bytes = std::fs::read(resolve_image_path(&path)).map_err(|e| {
-        eprintln!("[DEBUG] Read error: {}", e);
-        format!("读取图片失败: {}", e)
-    })?;
-    eprintln!("[DEBUG] Read {} bytes", bytes.len());
-    
-    let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    eprintln!("[DEBUG] Encoded {} chars", base64.len());
-    
-    // 返回 (base64, 实际字节数) 用于调试
-    eprintln!("[DEBUG] First 50 base64 chars: {}", &base64[..base64.len().min(50)]);
-    
-    Ok(base64)
+    let bytes = std::fs::read(resolve_image_path(&path))
+        .map_err(|e| format!("读取图片失败: {}", e))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+/// 保存前端生成的图片（分享卡片等）：data URL → 文件
+#[tauri::command]
+fn save_base64_image(data_url: String, path: String) -> Result<(), String> {
+    let b64 = data_url
+        .split(',')
+        .nth(1)
+        .ok_or_else(|| "无效的图片数据".to_string())?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| format!("图片数据解码失败: {}", e))?;
+    std::fs::write(&path, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(())
 }
 
 // ============================================================================
@@ -2028,6 +2029,7 @@ pub fn run() {
             download_cover,
             import_local_image,
             get_image_base64,
+            save_base64_image,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

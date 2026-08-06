@@ -143,6 +143,10 @@ export async function getImageBase64(path: string): Promise<string> {
   return invoke("get_image_base64", { path });
 }
 
+export async function saveBase64Image(dataUrl: string, path: string): Promise<void> {
+  return invoke("save_base64_image", { dataUrl, path });
+}
+
 export async function importLocalImage(
   sourcePath: string,
   title: string,
