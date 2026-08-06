@@ -210,7 +210,7 @@ function escapeHtml(s: string): string {
 /// 类型专属色（与 styles.css --genre-* token 同步）
 const GENRE_COLORS: Record<string, string> = {
   游戏: "#da77f2",
-  音乐: "#ff6b6b",
+  音乐: "#f06595", // 粉，避开 S 级红 #ff6b6b
   动漫: "#748ffc",
   小说: "#69db7c",
   影视剧: "#ffa94d",
@@ -524,7 +524,7 @@ async function generateShareCard(entry: Entry): Promise<string> {
     S: "#ff6b6b",
     A: "#ffa94d",
     B: "#69db7c",
-    C: "#74c0fc",
+    C: "#15aabf", // 青，避开动漫靛 #748ffc
   };
   const ratingColor = ratingColors[entry.rating] || "#a6adc8";
   ctx.font = "bold 22px 'Microsoft YaHei', sans-serif";
@@ -537,15 +537,15 @@ async function generateShareCard(entry: Entry): Promise<string> {
   const genreName = genres.find((g) => g.id === entry.genre_id)?.name || "";
   const metaText = `${genreName}${entry.creator ? " · " + entry.creator : ""}${
     entry.tasting_date ? " · " + formatDate(entry.tasting_date) : ""
-  }`;
+  }`.slice(0, 40); // 超长截断，避免溢出画布
   ctx.fillStyle = "#a6adc8";
   ctx.font = "16px 'Microsoft YaHei', sans-serif";
   ctx.fillText(metaText, 92, titleY + 54);
 
-  // 评价
+  // 评价（最多 8 行，避免压到标签区）
   ctx.fillStyle = "#cdd6f4";
   ctx.font = "16px 'Microsoft YaHei', sans-serif";
-  drawWrappedText(ctx, entry.review, 32, titleY + 104, W - 64, 28, 12);
+  drawWrappedText(ctx, entry.review, 32, titleY + 104, W - 64, 28, 8);
 
   // 标签（圆角胶囊）
   if (entry.tags.length > 0) {
@@ -708,11 +708,20 @@ async function loadEntries(append = false) {
     } else {
       totalCount = count;
       entries = newEntries;
+      // 筛选/搜索/排序变化时清空隐藏的选中项，避免批量删除误删不可见条目
+      selectedEntryIds.clear();
+      updateBatchButton();
       await renderEntries();
     }
   } catch (err) {
     console.error("Failed to load entries:", err);
     showToast("加载作品失败", "error");
+    // 加载失败时恢复旧列表，避免内容区永久白屏
+    if (entries.length > 0) {
+      entryListEl.classList.remove("hidden");
+      emptyStateEl.classList.add("hidden");
+      loadingEl.classList.add("hidden");
+    }
   } finally {
     loadingEl.classList.add("hidden");
   }
@@ -830,6 +839,7 @@ async function populateEntryForm(entry: Entry) {
       const item = btn.closest(".image-item");
       if (item) {
         item.remove();
+        formDirty = true; // 图片删除计入脏表单
       }
     });
   });
@@ -1128,9 +1138,11 @@ function bindEvents() {
       <button type="button" class="icon-btn remove-link">×</button>
     `;
     container.appendChild(div);
+    formDirty = true; // 链接变更计入脏表单
 
     div.querySelector(".remove-link")?.addEventListener("click", () => {
       div.remove();
+      formDirty = true;
     });
   });
 
@@ -1239,7 +1251,7 @@ function bindEvents() {
       const stats = await api.getStats();
       $("stats-total").textContent = String(stats.total);
       renderStatsBars("stats-rating", stats.rating_dist, (v) => {
-        const colors: Record<string, string> = { S: "#ff6b6b", A: "#ffa94d", B: "#69db7c", C: "#74c0fc" };
+        const colors: Record<string, string> = { S: "#ff6b6b", A: "#ffa94d", B: "#69db7c", C: "#15aabf" };
         return colors[v] || "#a6adc8";
       });
       renderStatsBars("stats-genre", stats.genre_dist, (v) => getGenreColor(v));
@@ -1570,7 +1582,8 @@ async function processBatchQueue() {
     batchResolve = null;
   }
 
-  // 批量结束
+  // 批量结束：区分正常完成与中途取消
+  const aborted = batchIndex < batchItems.length;
   batchActive = false;
   batchCurrentItem = null;
   batchCurrentCandidates = [];
@@ -1583,7 +1596,11 @@ async function processBatchQueue() {
   closeModal("modal-cover-pick");
   selectedEntryIds.clear();
   updateBatchButton();
-  showToast("批量爬图完成");
+  showToast(
+    aborted
+      ? `已取消批量爬图（完成 ${batchIndex}/${batchItems.length}）`
+      : "批量爬图完成"
+  );
   loadEntries();
 }
 
@@ -1640,7 +1657,7 @@ function renderCoverCandidates(candidates: api.CoverCandidate[], sourceName: str
   grid.innerHTML = candidates
     .map(
       (c, idx) => `
-    <div class="cover-cell" data-idx="${idx}" tabindex="0" role="button" aria-label="${c.title ? "选择封面：" + c.title : "选择封面 ${idx + 1}"}">
+    <div class="cover-cell" data-idx="${idx}" tabindex="0" role="button" aria-label="${c.title ? "选择封面：" + c.title : "选择封面 第" + (idx + 1) + "张"}">
       <div class="cover-loading">加载中...</div>
       <div class="cover-source-tag">${sourceName}</div>
       ${c.title ? `<div class="cover-title">${c.title}</div>` : ""}
@@ -1733,9 +1750,11 @@ async function addImageToContainer(localPath: string) {
   
   div.setAttribute("data-path", localPath);
   container.appendChild(div);
+  formDirty = true; // 图片变更也计入脏表单
 
   div.querySelector(".remove-btn")?.addEventListener("click", () => {
     div.remove();
+    formDirty = true;
   });
 }
 
@@ -1767,7 +1786,7 @@ async function init() {
     document.getElementById("view-list")?.classList.add("active");
   }
 
-  // 全局 Esc 关闭最上层模态框（无障碍）
+  // 全局 Esc 关闭最上层模态框（从后往前找，保证先关最上层；与脏表单确认弹窗叠加时行为正确）
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     const modalIds = [
@@ -1780,7 +1799,8 @@ async function init() {
       "modal-confirm",
       "modal-genre",
     ];
-    for (const id of modalIds) {
+    for (let i = modalIds.length - 1; i >= 0; i--) {
+      const id = modalIds[i];
       if (!$<HTMLDivElement>(id).classList.contains("hidden")) {
         closeModal(id);
         break;
