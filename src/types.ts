@@ -71,3 +71,9 @@ export interface SearchQuery {
   offset: number;
   limit: number;
 }
+
+export interface ImportResult {
+  imported: number;
+  failed: number;
+  errors: string[];
+}

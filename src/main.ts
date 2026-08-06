@@ -864,17 +864,32 @@ function bindEvents() {
     openModal("modal-confirm");
   });
 
-  // 导入（简化实现：触发文件选择）
-  $("btn-import").addEventListener("click", () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".json,.csv";
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-      showToast("导入功能开发中...", "error");
-    };
-    input.click();
+  // 导入 JSON/CSV
+  $("btn-import").addEventListener("click", async () => {
+    const selected = await open({
+      multiple: false,
+      title: "选择导入文件",
+      filters: [{ name: "JSON / CSV", extensions: ["json", "csv"] }],
+    });
+    if (!selected || typeof selected !== "string") return;
+
+    const ext = selected.split(".").pop()?.toLowerCase() || "json";
+    const format = ext === "csv" ? "csv" : "json";
+
+    try {
+      showToast("正在导入...");
+      const result = await api.importEntries(selected, format);
+      showToast(`导入完成：成功 ${result.imported} 条，失败 ${result.failed} 条`);
+      if (result.errors.length > 0) {
+        console.warn("Import errors:", result.errors.slice(0, 5));
+      }
+      await loadGenres();
+      await loadTagFilter();
+      await loadYearFilter();
+      await loadEntries();
+    } catch (err) {
+      showToast("导入失败: " + (err as Error).message, "error");
+    }
   });
 }
 

@@ -94,6 +94,10 @@ export async function importDatabase(sourcePath: string): Promise<void> {
   return invoke("import_database", { sourcePath });
 }
 
+export async function importEntries(path: string, format: string): Promise<ImportResult> {
+  return invoke("import_entries", { path, format });
+}
+
 // ============================================================================
 // 封面爬取
 // ============================================================================

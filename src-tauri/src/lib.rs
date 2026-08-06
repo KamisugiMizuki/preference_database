@@ -1659,6 +1659,201 @@ fn import_database(source_path: String) -> Result<(), String> {
     import_db_into(&source_path, &mut dst)
 }
 
+/// 按名称查找类型，不存在则创建自定义类型
+fn find_or_create_genre(conn: &Connection, name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("类型名为空".to_string());
+    }
+    if let Ok(id) = conn.query_row(
+        "SELECT id FROM genres WHERE name = ?1",
+        params![name],
+        |row| row.get(0),
+    ) {
+        return Ok(id);
+    }
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO genres (id, name, is_default, created_at) VALUES (?1, ?2, 0, ?3)",
+        params![id, name, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// 解析 "标签:URL;标签2:URL2" 形式的链接字符串（导出 CSV 的链接列格式）
+fn parse_links(s: &str) -> Vec<ExternalLink> {
+    s.split(';')
+        .filter(|x| !x.trim().is_empty())
+        .filter_map(|pair| {
+            if let Some(pos) = pair.find("http") {
+                let label = pair[..pos].trim_end_matches(':').trim().to_string();
+                let url = pair[pos..].trim().to_string();
+                if url.is_empty() {
+                    None
+                } else {
+                    Some(ExternalLink {
+                        id: String::new(),
+                        entry_id: String::new(),
+                        url,
+                        label,
+                    })
+                }
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// 解析导入 CSV（列序与导出一致：名称,类型,创作者,等级,评价,品鉴日期,标签,链接）
+fn parse_import_csv(content: &str) -> Result<Vec<ExportEntry>, String> {
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(content.as_bytes());
+    let mut out = Vec::new();
+    for record in rdr.records() {
+        let record = record.map_err(|e| e.to_string())?;
+        let name = record.get(0).unwrap_or("").trim().to_string();
+        let genre = record.get(1).unwrap_or("").trim().to_string();
+        let creator_raw = record.get(2).unwrap_or("").trim();
+        let creator = if creator_raw.is_empty() {
+            None
+        } else {
+            Some(creator_raw.to_string())
+        };
+        let rating = record.get(3).unwrap_or("").trim().to_string();
+        let review = record.get(4).unwrap_or("").to_string();
+        let date_raw = record.get(5).unwrap_or("").trim();
+        let tasting_date = if date_raw.is_empty() {
+            None
+        } else {
+            Some(date_raw.to_string())
+        };
+        let tags: Vec<String> = record
+            .get(6)
+            .unwrap_or("")
+            .split(';')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let links = parse_links(record.get(7).unwrap_or(""));
+        out.push(ExportEntry {
+            name,
+            genre_name: genre,
+            creator,
+            rating,
+            review,
+            tasting_date,
+            links,
+            tags,
+            images: vec![],
+        });
+    }
+    Ok(out)
+}
+
+/// 导入 JSON/CSV 文件（批量新增条目，类型缺失自动创建）
+#[tauri::command]
+fn import_entries(path: String, format: String) -> Result<ImportResult, String> {
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+
+    let records: Vec<ExportEntry> = match format.as_str() {
+        "json" => serde_json::from_str::<Vec<ExportEntry>>(&content)
+            .map_err(|e| format!("JSON 解析失败: {}", e))?,
+        "csv" => parse_import_csv(&content)?,
+        _ => return Err("不支持的格式".to_string()),
+    };
+
+    let mut imported = 0usize;
+    let mut failed = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
+    for rec in records {
+        let result = (|| -> Result<(), String> {
+            // 类型：查找或创建
+            let genre_id = find_or_create_genre(&conn, &rec.genre_name)?;
+            // 字段校验
+            validate_entry_fields(&rec.name, &genre_id, &rec.rating, &rec.review, &conn)?;
+
+            let id = Uuid::new_v4().to_string();
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO entries (id, name, genre_id, creator, rating, review, tasting_date, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    rec.name,
+                    genre_id,
+                    rec.creator,
+                    rec.rating,
+                    rec.review,
+                    rec.tasting_date,
+                    now,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            for link in &rec.links {
+                if link.url.trim().is_empty() {
+                    continue;
+                }
+                conn.execute(
+                    "INSERT INTO external_links (id, entry_id, url, label) VALUES (?1, ?2, ?3, ?4)",
+                    params![Uuid::new_v4().to_string(), id, link.url, link.label],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            for tag in &rec.tags {
+                if tag.trim().is_empty() {
+                    continue;
+                }
+                conn.execute(
+                    "INSERT INTO tags (id, entry_id, name) VALUES (?1, ?2, ?3)",
+                    params![Uuid::new_v4().to_string(), id, tag],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            for (i, img) in rec.images.iter().enumerate() {
+                if img.trim().is_empty() {
+                    continue;
+                }
+                conn.execute(
+                    "INSERT INTO entry_images (id, entry_id, path, is_primary) VALUES (?1, ?2, ?3, ?4)",
+                    params![Uuid::new_v4().to_string(), id, img, if i == 0 { 1 } else { 0 }],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => imported += 1,
+            Err(e) => {
+                failed += 1;
+                if errors.len() < 20 {
+                    errors.push(format!("《{}》: {}", rec.name, e));
+                }
+            }
+        }
+    }
+
+    Ok(ImportResult {
+        imported,
+        failed,
+        errors,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportResult {
+    pub imported: usize,
+    pub failed: usize,
+    pub errors: Vec<String>,
+}
+
 #[tauri::command]
 fn get_image_base64(path: String) -> Result<String, String> {
     eprintln!("[DEBUG] get_image_base64 called");
@@ -1714,6 +1909,7 @@ pub fn run() {
             set_primary_image,
             // 导出导入
             export_entries,
+            import_entries,
             // 备份
             backup_database,
             import_database,
@@ -1879,6 +2075,48 @@ mod cover_tests {
         assert!(import_db_into(bad.to_str().unwrap(), &mut dst).is_err());
 
         drop(dst);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_parse_import_csv() {
+        let csv = "名称,类型,创作者,等级,评价,品鉴日期,标签,链接\n\
+测试作品,游戏,某人,S,这是一段超过十个字符的评价,2026-01-01,科幻;治愈,豆瓣:https://douban.com/x\n\
+坏条目,游戏,,X,太短,,,\n\
+\"作品A\",音乐,艺术家,S,\"评价，带中文逗号和\"\"引号\"\"足够长足够长\",2026-02-01,标签1,\n";
+        let recs = parse_import_csv(csv).unwrap();
+        assert_eq!(recs.len(), 3);
+        assert_eq!(recs[0].name, "测试作品");
+        assert_eq!(recs[0].genre_name, "游戏");
+        assert_eq!(recs[0].tags, vec!["科幻", "治愈"]);
+        assert_eq!(recs[0].links.len(), 1);
+        assert_eq!(recs[0].links[0].label, "豆瓣");
+        assert_eq!(recs[0].links[0].url, "https://douban.com/x");
+        // 引号转义解析
+        assert_eq!(recs[2].name, "作品A");
+        assert_eq!(recs[2].review, "评价，带中文逗号和\"引号\"足够长足够长");
+    }
+
+    #[test]
+    fn test_find_or_create_genre() {
+        let dir = std::env::temp_dir().join(format!("prefdb_genre_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("g.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE genres (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);",
+        )
+        .unwrap();
+
+        // 不存在 → 创建
+        let id1 = find_or_create_genre(&conn, "自定义类型").unwrap();
+        // 再次 → 复用同一 id
+        let id2 = find_or_create_genre(&conn, " 自定义类型 ").unwrap();
+        assert_eq!(id1, id2);
+        // 空名 → 错误
+        assert!(find_or_create_genre(&conn, "  ").is_err());
+
+        drop(conn);
         std::fs::remove_dir_all(&dir).ok();
     }
 }
