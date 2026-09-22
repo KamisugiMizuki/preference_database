@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { httpUrl } from "./security";
 import type {
   Genre,
   Entry,
@@ -143,7 +144,15 @@ export async function fetchCoverCandidates(
   creator: string | null,
   sourceId: string
 ): Promise<CoverCandidate[]> {
-  return invoke("fetch_cover_candidates", { title, creator, sourceId });
+  const candidates = await invoke<CoverCandidate[]>("fetch_cover_candidates", { title, creator, sourceId });
+  return candidates
+    .filter((c) => httpUrl(c.url) !== null)
+    .map((c) => ({ ...c, thumbnail_url: c.thumbnail_url ? httpUrl(c.thumbnail_url) : null }));
+}
+
+export async function fetchCoverPreview(url: string): Promise<string> {
+  if (!httpUrl(url)) throw new Error("封面地址必须是完整的 HTTP(S) URL");
+  return invoke("fetch_cover_preview", { url });
 }
 
 export async function downloadCover(
@@ -151,6 +160,7 @@ export async function downloadCover(
   title: string,
   creator: string | null
 ): Promise<string> {
+  if (!httpUrl(url)) throw new Error("封面地址必须是完整的 http:// 或 https:// URL");
   return invoke("download_cover", { url, title, creator });
 }
 

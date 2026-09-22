@@ -53,10 +53,21 @@ export interface CreateEntryRequest {
   tasting_date: string | null;
   links: ExternalLink[];
   tags: string[];
+  image_paths: string[];
 }
 
-export interface UpdateEntryRequest extends CreateEntryRequest {
+export interface UpdateEntryRequest {
   id: string;
+  name: string;
+  genre_id: string;
+  creator: string | null;
+  rating: string;
+  review: string;
+  tasting_date: string | null;
+  links: ExternalLink[];
+  tags: string[];
+  new_image_paths: string[];
+  removed_image_ids: string[];
 }
 
 export interface SearchQuery {

@@ -3,7 +3,9 @@ use chrono::Utc;
 use once_cell::sync::Lazy;
 use rusqlite::{params, Connection, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 // ============================================================================
@@ -78,6 +80,8 @@ pub struct CreateEntryRequest {
     pub tasting_date: Option<String>,
     pub links: Vec<ExternalLink>,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub image_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +95,10 @@ pub struct UpdateEntryRequest {
     pub tasting_date: Option<String>,
     pub links: Vec<ExternalLink>,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub new_image_paths: Vec<String>,
+    #[serde(default)]
+    pub removed_image_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,8 +109,8 @@ pub struct SearchQuery {
     pub ratings: Vec<String>,
     pub tag_filter: Vec<String>,
     pub year: Option<i32>,
-    pub sort_by: String,       // "name", "rating", "tasting_date", "updated_at"
-    pub sort_order: String,     // "asc", "desc"
+    pub sort_by: String,    // "name", "rating", "tasting_date", "updated_at"
+    pub sort_order: String, // "asc", "desc"
     pub offset: i64,
     pub limit: i64,
 }
@@ -133,13 +141,27 @@ pub struct CoverCandidate {
 // 数据库初始化
 // ============================================================================
 
+#[cfg(test)]
 fn get_project_root() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(root) = exe.ancestors().nth(4) {
-            return root.to_path_buf();
-        }
-    }
-    std::path::PathBuf::from(".")
+    static ROOT: Lazy<std::path::PathBuf> = Lazy::new(|| {
+        let root = std::env::temp_dir().join(format!("prefdb_tests_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    });
+    ROOT.clone()
+}
+
+mod storage;
+
+#[cfg(not(test))]
+fn get_project_root() -> std::path::PathBuf {
+    static ROOT: Lazy<std::path::PathBuf> = Lazy::new(|| {
+        let exe = std::env::current_exe().expect("无法定位程序路径");
+        let local = dirs::data_local_dir().expect("无法定位用户数据目录");
+        storage::prepare_data_root(&exe, &local.join("Preference Database"))
+            .unwrap_or_else(|error| panic!("数据目录初始化失败，原数据未删除: {}", error))
+    });
+    ROOT.clone()
 }
 
 /// 图片路径解析：相对路径拼接项目根，绝对路径（旧数据）原样返回
@@ -152,7 +174,373 @@ fn resolve_image_path(path: &str) -> std::path::PathBuf {
     }
 }
 
+fn validate_http_url(raw: &str) -> Result<(), String> {
+    if raw.chars().any(char::is_control) {
+        return Err("URL 不能含控制字符".to_string());
+    }
+    let url = reqwest::Url::parse(raw).map_err(|_| "只允许有效的 HTTP(S) URL".to_string())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err("只允许 HTTP(S) URL".to_string());
+    }
+    Ok(())
+}
+
+fn request_host(raw: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(raw).map_err(|_| "无效的请求 URL".to_string())?;
+    Ok(url
+        .host_str()
+        .ok_or_else(|| "请求 URL 缺少主机名".to_string())?
+        .to_ascii_lowercase())
+}
+
+// ponytail: 桌面端串行发送；需要并行抓取时再拆成每主机调度。
+static HTTP_DISPATCH: Mutex<()> = Mutex::new(());
+static LAST_REQUEST_BY_HOST: Lazy<Mutex<HashMap<String, Instant>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn send_rate_limited(
+    request: reqwest::blocking::RequestBuilder,
+    url: &str,
+) -> Result<reqwest::blocking::Response, String> {
+    let _dispatch = HTTP_DISPATCH.lock().map_err(|e| e.to_string())?;
+    wait_for_request_slot(url)?;
+    let response = request.send().map_err(|e| format!("请求失败: {}", e))?;
+    LAST_REQUEST_BY_HOST
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(request_host(response.url().as_str())?, Instant::now());
+    response
+        .error_for_status()
+        .map_err(|e| format!("服务端返回错误: {}", e))
+}
+
+fn wait_for_request_slot(url: &str) -> Result<(), String> {
+    validate_http_url(url)?;
+    let host = request_host(url)?;
+    let mut last_requests = LAST_REQUEST_BY_HOST
+        .lock()
+        .map_err(|e| format!("请求限速器不可用: {}", e))?;
+    if let Some(last) = last_requests.get(&host) {
+        let elapsed = last.elapsed();
+        if elapsed < Duration::from_secs(1) {
+            std::thread::sleep(Duration::from_secs(1) - elapsed);
+        }
+    }
+    last_requests.insert(host, Instant::now());
+    Ok(())
+}
+
+fn image_extension_from_bytes(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpg")
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else if bytes.starts_with(b"BM") {
+        Some("bmp")
+    } else {
+        None
+    }
+}
+
+fn validate_image_bytes(bytes: &[u8]) -> Result<&'static str, String> {
+    const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+    if bytes.is_empty() {
+        return Err("图片内容为空".to_string());
+    }
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err("图片超过 10 MiB 大小限制".to_string());
+    }
+    image_extension_from_bytes(bytes).ok_or_else(|| "下载内容不是受支持的图片格式".to_string())
+}
+
+fn validate_image_response(
+    response: reqwest::blocking::Response,
+) -> Result<(Vec<u8>, &'static str), String> {
+    const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(
+        content_type.as_str(),
+        "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/bmp" | "image/x-ms-bmp"
+    ) {
+        return Err("响应不是受支持的图片类型".to_string());
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_IMAGE_BYTES)
+    {
+        return Err("图片超过 10 MiB 大小限制".to_string());
+    }
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("读取图片失败: {}", e))?;
+    let extension = validate_image_bytes(&bytes)?;
+    let declared_extension = match content_type.as_str() {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" | "image/x-ms-bmp" => "bmp",
+        _ => unreachable!(),
+    };
+    if extension != declared_extension {
+        return Err("图片内容与响应类型不一致".to_string());
+    }
+    Ok((bytes, extension))
+}
+
+fn validate_external_links(links: &[ExternalLink]) -> Result<(), String> {
+    for link in links {
+        if !link.url.trim().is_empty() {
+            validate_http_url(link.url.trim())?;
+        }
+    }
+    Ok(())
+}
+
+/// 新写入的图片只能位于应用自己的封面目录，旧库的绝对路径仍可读取。
+fn validate_project_image_path(path: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::Component;
+
+    let p = std::path::Path::new(path);
+    let cover_dir = std::path::Path::new("resource").join("cover_image");
+    if p.is_absolute()
+        || !p.starts_with(&cover_dir)
+        || p.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err("图片路径必须位于 resource/cover_image 目录内".to_string());
+    }
+    if p.components()
+        .any(|part| part.as_os_str().to_string_lossy().contains(':'))
+    {
+        return Err("图片路径不能包含设备名或数据流".to_string());
+    }
+    let managed = managed_cover_dir()?;
+    let resolved = get_project_root()
+        .join(p)
+        .canonicalize()
+        .map_err(|e| format!("图片不存在: {}", e))?;
+    if !resolved.starts_with(&managed) || !resolved.is_file() {
+        return Err("图片路径越出封面目录或不是文件".to_string());
+    }
+    Ok(resolved)
+}
+
+fn managed_cover_dir() -> Result<std::path::PathBuf, String> {
+    let root = get_project_root()
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let dir = root.join("resource/cover_image");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir = dir.canonicalize().map_err(|e| e.to_string())?;
+    if !dir.starts_with(&root) {
+        return Err("封面目录不能指向数据目录以外".to_string());
+    }
+    Ok(dir)
+}
+
+fn image_path_key(path: &std::path::Path) -> Option<String> {
+    let key = path
+        .canonicalize()
+        .ok()?
+        .to_string_lossy()
+        .replace('\\', "/");
+    Some(if cfg!(windows) {
+        key.to_lowercase()
+    } else {
+        key
+    })
+}
+
+fn remove_unreferenced_image_files(paths: &[String]) {
+    let Ok(conn) = DB.lock() else {
+        return;
+    };
+    if let Err(error) = retry_image_cleanup(&conn, paths) {
+        eprintln!("[WARN] 图片清理将在下次操作重试: {}", error);
+    }
+}
+
+fn retry_image_cleanup(conn: &Connection, paths: &[String]) -> Result<(), String> {
+    for path in paths {
+        conn.execute(
+            "INSERT OR IGNORE INTO image_cleanup(path) VALUES(?1)",
+            params![path],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let references: Vec<String> = conn
+        .prepare("SELECT DISTINCT path FROM entry_images")
+        .map_err(|e| e.to_string())?
+        .query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<SqliteResult<_>>()
+        .map_err(|e| e.to_string())?;
+    let referenced: std::collections::HashSet<_> = references
+        .iter()
+        .filter_map(|path| image_path_key(&resolve_image_path(path)))
+        .collect();
+    let pending: Vec<String> = conn
+        .prepare("SELECT path FROM image_cleanup")
+        .map_err(|e| e.to_string())?
+        .query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<SqliteResult<_>>()
+        .map_err(|e| e.to_string())?;
+    let managed = managed_cover_dir()?;
+    for path in pending {
+        let resolved = resolve_image_path(&path);
+        let forget = match resolved.canonicalize() {
+            Ok(actual) => {
+                if !actual.starts_with(&managed) || !actual.is_file() {
+                    // 旧外部文件归用户所有，删除条目不删除外部原件。
+                    true
+                } else if image_path_key(&actual).is_some_and(|key| referenced.contains(&key)) {
+                    true // 新引用重新接管该图片，后续删除仍由触发器登记。
+                } else {
+                    match std::fs::remove_file(&actual) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            eprintln!(
+                                "[WARN] 图片仍被占用，稍后重试 {}: {}",
+                                actual.display(),
+                                error
+                            );
+                            false
+                        }
+                    }
+                }
+            }
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        };
+        if forget {
+            conn.execute("DELETE FROM image_cleanup WHERE path=?1", params![path])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn import_image_source_path(
+    raw: &str,
+    import_file: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let source = std::path::Path::new(raw);
+    if source
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("导入图片路径不能包含 ..".to_string());
+    }
+    let base = import_file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let candidate = base.join(source);
+    if let Ok(resolved) = candidate.canonicalize() {
+        if resolved.starts_with(&base) && resolved.is_file() {
+            return Ok(resolved);
+        }
+    }
+    // 兼容旧 JSON 中记录的本应用封面路径；不读取导入文件任意指定的外部文件。
+    if source.is_absolute() {
+        let resolved = source.canonicalize().map_err(|e| e.to_string())?;
+        if resolved.starts_with(managed_cover_dir()?) && resolved.is_file() {
+            return Ok(resolved);
+        }
+    } else if let Ok(resolved) = validate_project_image_path(raw) {
+        return Ok(resolved);
+    }
+    Err(format!("导入图片不存在或越出导入目录: {}", raw))
+}
+
+fn read_image_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(|e| format!("读取图片失败: {}", e))?
+        .take(10 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    validate_image_bytes(&bytes)?;
+    Ok(bytes)
+}
+
+fn store_image_bytes(bytes: &[u8], name: &str) -> Result<String, String> {
+    use std::io::Write;
+    let ext = validate_image_bytes(bytes)?;
+    let stem: String = sanitize_filename(name).chars().take(60).collect();
+    let file_name = format!("{}_{}.{}", stem, Uuid::new_v4(), ext);
+    let target = managed_cover_dir()?.join(&file_name);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .map_err(|e| e.to_string())?;
+    if let Err(error) = file.write_all(bytes) {
+        drop(file);
+        let _ = std::fs::remove_file(&target);
+        return Err(error.to_string());
+    }
+    Ok(format!("resource/cover_image/{}", file_name))
+}
+
+fn copy_imported_images(
+    image_paths: &[String],
+    import_file: &std::path::Path,
+) -> Result<(Vec<String>, Vec<std::path::PathBuf>), String> {
+    let mut stored_paths = Vec::new();
+    let mut copied_files = Vec::new();
+    if image_paths.is_empty() {
+        return Ok((stored_paths, copied_files));
+    }
+
+    let result = (|| -> Result<(), String> {
+        for raw in image_paths.iter().filter(|path| !path.trim().is_empty()) {
+            let source = import_image_source_path(raw, import_file)?;
+            let bytes = read_image_file(&source)?;
+            let stored = store_image_bytes(&bytes, "import")?;
+            copied_files.push(resolve_image_path(&stored));
+            stored_paths.push(stored);
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        remove_copied_files(&copied_files);
+        return Err(error);
+    }
+    Ok((stored_paths, copied_files))
+}
+
+fn remove_copied_files(paths: &[std::path::PathBuf]) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// 绝对路径转项目相对路径（用于入库）；不在项目内则原样返回
+#[cfg(test)]
 fn to_project_rel_path(path: &std::path::Path) -> String {
     match path.strip_prefix(get_project_root()) {
         Ok(rel) => rel.to_string_lossy().to_string(),
@@ -171,10 +559,15 @@ static DB: Lazy<Mutex<Connection>> = Lazy::new(|| {
     let db_path = get_db_path();
     let conn = Connection::open(&db_path).expect("Failed to open database");
     init_database(&conn).expect("Failed to initialize database");
+    if let Err(error) = retry_image_cleanup(&conn, &[]) {
+        eprintln!("[WARN] 启动时图片清理失败: {}", error);
+    }
     Mutex::new(conn)
 });
 
 fn init_database(conn: &Connection) -> SqliteResult<()> {
+    conn.execute_batch("PRAGMA foreign_keys = ON")?;
+
     // 作品类型表
     conn.execute(
         "CREATE TABLE IF NOT EXISTS genres (
@@ -238,13 +631,35 @@ fn init_database(conn: &Connection) -> SqliteResult<()> {
         [],
     )?;
 
+    // 与图片引用删除处于同一事务，文件占用或退出后仍可重试。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS image_cleanup(path TEXT PRIMARY KEY);
+        CREATE TRIGGER IF NOT EXISTS queue_image_cleanup AFTER DELETE ON entry_images
+        BEGIN INSERT OR IGNORE INTO image_cleanup(path) VALUES(OLD.path); END;",
+    )?;
+
     // 创建索引
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_genre ON entries(genre_id)", [])?;
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_rating ON entries(rating)", [])?;
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_name ON entries(name)", [])?;
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_entry ON tags(entry_id)", [])?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entries_genre ON entries(genre_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entries_rating ON entries(rating)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entries_name ON entries(name)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tags_entry ON tags(entry_id)",
+        [],
+    )?;
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)", [])?;
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_links_entry ON external_links(entry_id)", [])?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_links_entry ON external_links(entry_id)",
+        [],
+    )?;
 
     // 插入默认类型
     let default_genres = ["游戏", "音乐", "动漫", "小说", "影视剧"];
@@ -275,14 +690,23 @@ fn validate_entry_fields(
         return Err("作品名称不能为空".to_string());
     }
     if name_len > 200 {
-        return Err(format!("作品名称长度不能超过 200 字符（当前 {}）", name_len));
+        return Err(format!(
+            "作品名称长度不能超过 200 字符（当前 {}）",
+            name_len
+        ));
     }
     let review_len = review.trim().chars().count();
     if review_len < 10 {
-        return Err(format!("个人评价文段至少需要 10 字符（当前 {}）", review_len));
+        return Err(format!(
+            "个人评价文段至少需要 10 字符（当前 {}）",
+            review_len
+        ));
     }
     if review_len > 20000 {
-        return Err(format!("个人评价文段不能超过 20000 字符（当前 {}）", review_len));
+        return Err(format!(
+            "个人评价文段不能超过 20000 字符（当前 {}）",
+            review_len
+        ));
     }
     if !["S", "A", "B", "C"].contains(&rating) {
         return Err(format!("无效的评价等级: {}", rating));
@@ -364,8 +788,11 @@ fn delete_genre(id: String) -> Result<(), String> {
         return Err("无法删除：此类型下仍有作品条目".to_string());
     }
 
-    conn.execute("DELETE FROM genres WHERE id = ?1 AND is_default = 0", params![id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM genres WHERE id = ?1 AND is_default = 0",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -467,13 +894,22 @@ fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
     // 排序（等级按 S>A>B>C 语义序，非字母序）
     let sort_expr = match query.sort_by.as_str() {
         "name" => "e.name".to_string(),
-        "rating" => "CASE e.rating WHEN 'S' THEN 0 WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 3 END".to_string(),
+        "rating" => {
+            "CASE e.rating WHEN 'S' THEN 0 WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 3 END".to_string()
+        }
         "tasting_date" => "e.tasting_date".to_string(),
         _ => "e.updated_at".to_string(),
     };
-    let sort_dir = if query.sort_order == "asc" { "ASC" } else { "DESC" };
+    let sort_dir = if query.sort_order == "asc" {
+        "ASC"
+    } else {
+        "DESC"
+    };
     // 次级键 e.id 保证同值区间分页稳定（避免 LIMIT/OFFSET 重复或丢条目）
-    sql.push_str(&format!(" ORDER BY {} {}, e.id {}", sort_expr, sort_dir, sort_dir));
+    sql.push_str(&format!(
+        " ORDER BY {} {}, e.id {}",
+        sort_expr, sort_dir, sort_dir
+    ));
 
     // 分页
     sql.push_str(&format!(" LIMIT {} OFFSET {}", query.limit, query.offset));
@@ -520,7 +956,7 @@ fn get_entries(query: SearchQuery) -> Result<Vec<EntrySummary>, String> {
                 |row| row.get(0),
             )
             .ok();
-        
+
         entry.tags = tags;
         entry.primary_image = primary_image;
         result.push(entry);
@@ -613,36 +1049,71 @@ fn get_entry(id: String) -> Result<Entry, String> {
 
 #[tauri::command]
 fn create_entry(req: CreateEntryRequest) -> Result<Entry, String> {
-    let conn = DB.lock().map_err(|e| e.to_string())?;
-    validate_entry_fields(&req.name, &req.genre_id, &req.rating, &req.review, &conn)?;
+    let mut conn = DB.lock().map_err(|e| e.to_string())?;
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
+    let image_paths = req.image_paths.clone();
 
-    conn.execute(
-        "INSERT INTO entries (id, name, genre_id, creator, rating, review, tasting_date, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![id, req.name, req.genre_id, req.creator, req.rating, req.review, req.tasting_date, now, now],
-    )
-    .map_err(|e| e.to_string())?;
-
-    // 插入链接
-    for link in &req.links {
-        let link_id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO external_links (id, entry_id, url, label) VALUES (?1, ?2, ?3, ?4)",
-            params![link_id, id, link.url, link.label],
+    let result = (|| -> Result<(), String> {
+        validate_entry_fields(&req.name, &req.genre_id, &req.rating, &req.review, &conn)?;
+        validate_external_links(&req.links)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO entries (id, name, genre_id, creator, rating, review, tasting_date, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                id,
+                req.name,
+                req.genre_id,
+                req.creator,
+                req.rating,
+                req.review,
+                req.tasting_date,
+                now,
+                now
+            ],
         )
         .map_err(|e| e.to_string())?;
-    }
 
-    // 插入标签
-    for tag in &req.tags {
-        let tag_id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO tags (id, entry_id, name) VALUES (?1, ?2, ?3)",
-            params![tag_id, id, tag],
-        )
-        .map_err(|e| e.to_string())?;
+        for link in &req.links {
+            let link_id = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO external_links (id, entry_id, url, label) VALUES (?1, ?2, ?3, ?4)",
+                params![link_id, id, link.url, link.label],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        for tag in &req.tags {
+            let tag_id = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO tags (id, entry_id, name) VALUES (?1, ?2, ?3)",
+                params![tag_id, id, tag],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        for (index, path) in image_paths.iter().enumerate() {
+            validate_project_image_path(path)?;
+            tx.execute(
+                "INSERT INTO entry_images (id, entry_id, path, is_primary) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    id,
+                    path,
+                    if index == 0 { 1 } else { 0 }
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        tx.commit().map_err(|e| e.to_string())
+    })();
+
+    if let Err(error) = result {
+        drop(conn);
+        remove_unreferenced_image_files(&image_paths);
+        return Err(error);
     }
 
     drop(conn);
@@ -651,71 +1122,138 @@ fn create_entry(req: CreateEntryRequest) -> Result<Entry, String> {
 
 #[tauri::command]
 fn update_entry(req: UpdateEntryRequest) -> Result<Entry, String> {
-    let conn = DB.lock().map_err(|e| e.to_string())?;
-    validate_entry_fields(&req.name, &req.genre_id, &req.rating, &req.review, &conn)?;
+    let mut conn = DB.lock().map_err(|e| e.to_string())?;
     let now = Utc::now().to_rfc3339();
+    let new_image_paths = req.new_image_paths.clone();
+    let mut removed_image_paths = Vec::new();
 
-    conn.execute(
-        "UPDATE entries SET name = ?1, genre_id = ?2, creator = ?3, rating = ?4, review = ?5,
-         tasting_date = ?6, updated_at = ?7 WHERE id = ?8",
-        params![req.name, req.genre_id, req.creator, req.rating, req.review, req.tasting_date, now, req.id],
-    )
-    .map_err(|e| e.to_string())?;
+    let result = (|| -> Result<(), String> {
+        validate_entry_fields(&req.name, &req.genre_id, &req.rating, &req.review, &conn)?;
+        validate_external_links(&req.links)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    // 更新链接：先删后插
-    conn.execute("DELETE FROM external_links WHERE entry_id = ?", params![req.id])
-        .map_err(|e| e.to_string())?;
-    for link in &req.links {
-        let link_id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO external_links (id, entry_id, url, label) VALUES (?1, ?2, ?3, ?4)",
-            params![link_id, req.id, link.url, link.label],
+        for image_id in &req.removed_image_ids {
+            if let Ok(path) = tx.query_row(
+                "SELECT path FROM entry_images WHERE id = ?1 AND entry_id = ?2",
+                params![image_id, req.id],
+                |row| row.get::<_, String>(0),
+            ) {
+                removed_image_paths.push(path);
+            }
+        }
+
+        tx.execute(
+            "UPDATE entries SET name = ?1, genre_id = ?2, creator = ?3, rating = ?4, review = ?5,
+             tasting_date = ?6, updated_at = ?7 WHERE id = ?8",
+            params![
+                req.name,
+                req.genre_id,
+                req.creator,
+                req.rating,
+                req.review,
+                req.tasting_date,
+                now,
+                req.id
+            ],
         )
         .map_err(|e| e.to_string())?;
-    }
 
-    // 更新标签：先删后插
-    conn.execute("DELETE FROM tags WHERE entry_id = ?", params![req.id])
-        .map_err(|e| e.to_string())?;
-    for tag in &req.tags {
-        let tag_id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO tags (id, entry_id, name) VALUES (?1, ?2, ?3)",
-            params![tag_id, req.id, tag],
+        tx.execute(
+            "DELETE FROM external_links WHERE entry_id = ?",
+            params![req.id],
         )
         .map_err(|e| e.to_string())?;
+        for link in &req.links {
+            tx.execute(
+                "INSERT INTO external_links (id, entry_id, url, label) VALUES (?1, ?2, ?3, ?4)",
+                params![Uuid::new_v4().to_string(), req.id, link.url, link.label],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        tx.execute("DELETE FROM tags WHERE entry_id = ?", params![req.id])
+            .map_err(|e| e.to_string())?;
+        for tag in &req.tags {
+            tx.execute(
+                "INSERT INTO tags (id, entry_id, name) VALUES (?1, ?2, ?3)",
+                params![Uuid::new_v4().to_string(), req.id, tag],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        for path in &new_image_paths {
+            validate_project_image_path(path)?;
+            let is_primary = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM entry_images WHERE entry_id = ?1 AND is_primary = 1)",
+                    params![req.id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|e| e.to_string())?
+                == 0;
+            if is_primary {
+                tx.execute(
+                    "UPDATE entry_images SET is_primary = 0 WHERE entry_id = ?",
+                    params![req.id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tx.execute(
+                "INSERT INTO entry_images (id, entry_id, path, is_primary) VALUES (?1, ?2, ?3, ?4)",
+                params![Uuid::new_v4().to_string(), req.id, path, is_primary as i32],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        for image_id in &req.removed_image_ids {
+            tx.execute(
+                "DELETE FROM entry_images WHERE id = ?1 AND entry_id = ?2",
+                params![image_id, req.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        ensure_primary_image(&tx, &req.id)?;
+
+        tx.commit().map_err(|e| e.to_string())
+    })();
+
+    if let Err(error) = result {
+        drop(conn);
+        remove_unreferenced_image_files(&new_image_paths);
+        return Err(error);
     }
 
     drop(conn);
+    remove_unreferenced_image_files(&removed_image_paths);
     get_entry(req.id)
 }
 
 #[tauri::command]
 fn delete_entries(ids: Vec<String>) -> Result<(), String> {
-    let conn = DB.lock().map_err(|e| e.to_string())?;
-
-    for id in &ids {
-        // 获取图片路径用于删除文件
-        let mut stmt = conn
-            .prepare("SELECT path FROM entry_images WHERE entry_id = ?")
-            .map_err(|e| e.to_string())?;
-        let paths: Vec<String> = stmt
-            .query_map(params![id], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
-        drop(stmt);
-
-        // 删除数据库记录（级联删除关联表）
-        conn.execute("DELETE FROM entries WHERE id = ?", params![id])
-            .map_err(|e| e.to_string())?;
-
-        // 删除本地图片文件
-        for path in paths {
-            std::fs::remove_file(resolve_image_path(&path)).ok();
+    let mut conn = DB.lock().map_err(|e| e.to_string())?;
+    let mut paths = Vec::new();
+    let result = (|| -> Result<(), String> {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for id in &ids {
+            let mut stmt = tx
+                .prepare("SELECT path FROM entry_images WHERE entry_id = ?")
+                .map_err(|e| e.to_string())?;
+            paths.extend(
+                stmt.query_map(params![id], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?,
+            );
         }
-    }
-
+        for id in &ids {
+            tx.execute("DELETE FROM entries WHERE id = ?", params![id])
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    })();
+    result?;
+    drop(conn);
+    remove_unreferenced_image_files(&paths);
     Ok(())
 }
 
@@ -779,23 +1317,24 @@ fn get_tasting_years() -> Result<Vec<i32>, String> {
 
 #[tauri::command]
 fn add_entry_image(entry_id: String, path: String, is_primary: bool) -> Result<EntryImage, String> {
-    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let mut conn = DB.lock().map_err(|e| e.to_string())?;
+    validate_project_image_path(&path)?;
+    let id = Uuid::new_v4().to_string();
 
-    // 如果设为主图，先取消其他主图
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     if is_primary {
-        conn.execute(
+        tx.execute(
             "UPDATE entry_images SET is_primary = 0 WHERE entry_id = ?",
             params![entry_id],
         )
         .map_err(|e| e.to_string())?;
     }
-
-    let id = Uuid::new_v4().to_string();
-    conn.execute(
+    tx.execute(
         "INSERT INTO entry_images (id, entry_id, path, is_primary) VALUES (?1, ?2, ?3, ?4)",
         params![id, entry_id, path, is_primary as i32],
     )
     .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
 
     Ok(EntryImage {
         id,
@@ -807,48 +1346,70 @@ fn add_entry_image(entry_id: String, path: String, is_primary: bool) -> Result<E
 
 #[tauri::command]
 fn delete_entry_image(id: String) -> Result<(), String> {
-    let conn = DB.lock().map_err(|e| e.to_string())?;
-
-    // 获取图片路径
-    let path: Option<String> = conn
-        .query_row("SELECT path FROM entry_images WHERE id = ?", params![id], |row| row.get(0))
-        .ok();
-
-    conn.execute("DELETE FROM entry_images WHERE id = ?", params![id])
+    use rusqlite::OptionalExtension;
+    let mut conn = DB.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let image: Option<(String, String)> = tx
+        .query_row(
+            "SELECT path, entry_id FROM entry_images WHERE id = ?",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
         .map_err(|e| e.to_string())?;
-
-    // 删除文件
-    if let Some(p) = path {
-        std::fs::remove_file(resolve_image_path(&p)).ok();
+    tx.execute("DELETE FROM entry_images WHERE id = ?", params![id])
+        .map_err(|e| e.to_string())?;
+    if let Some((_, entry_id)) = &image {
+        ensure_primary_image(&tx, entry_id)?;
     }
+    tx.commit().map_err(|e| e.to_string())?;
+    drop(conn);
+    if let Some((path, _)) = image {
+        remove_unreferenced_image_files(&[path]);
+    }
+    Ok(())
+}
 
+fn ensure_primary_image(conn: &Connection, entry_id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE entry_images SET is_primary = 1 WHERE id = (
+            SELECT id FROM entry_images WHERE entry_id = ?1 ORDER BY rowid LIMIT 1
+        ) AND NOT EXISTS(SELECT 1 FROM entry_images WHERE entry_id = ?1 AND is_primary = 1)",
+        params![entry_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn set_primary_image(id: String) -> Result<(), String> {
-    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let mut conn = DB.lock().map_err(|e| e.to_string())?;
 
     // 获取 entry_id
     let entry_id: String = conn
-        .query_row("SELECT entry_id FROM entry_images WHERE id = ?", params![id], |row| row.get(0))
+        .query_row(
+            "SELECT entry_id FROM entry_images WHERE id = ?",
+            params![id],
+            |row| row.get(0),
+        )
         .map_err(|e| e.to_string())?;
 
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     // 取消该条目所有主图
-    conn.execute(
+    tx.execute(
         "UPDATE entry_images SET is_primary = 0 WHERE entry_id = ?",
         params![entry_id],
     )
     .map_err(|e| e.to_string())?;
 
     // 设置新主图
-    conn.execute(
+    tx.execute(
         "UPDATE entry_images SET is_primary = 1 WHERE id = ?",
         params![id],
     )
     .map_err(|e| e.to_string())?;
 
-    Ok(())
+    tx.commit().map_err(|e| e.to_string())
 }
 
 // ============================================================================
@@ -910,7 +1471,18 @@ fn export_entries(
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
-    let entries: Vec<(String, String, String, Option<String>, String, String, Option<String>, String, String)> = stmt
+    type ExportRow = (
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+    );
+    let entries: Vec<ExportRow> = stmt
         .query_map(params_refs.as_slice(), |row| {
             Ok((
                 row.get(0)?, // id
@@ -935,12 +1507,14 @@ fn export_entries(
             .prepare("SELECT id, entry_id, url, label FROM external_links WHERE entry_id = ?")
             .map_err(|e| e.to_string())?;
         let links: Vec<ExternalLink> = stmt
-            .query_map(params![id], |row| Ok(ExternalLink {
-                id: row.get(0)?,
-                entry_id: row.get(1)?,
-                url: row.get(2)?,
-                label: row.get(3)?,
-            }))
+            .query_map(params![id], |row| {
+                Ok(ExternalLink {
+                    id: row.get(0)?,
+                    entry_id: row.get(1)?,
+                    url: row.get(2)?,
+                    label: row.get(3)?,
+                })
+            })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
@@ -990,29 +1564,60 @@ fn export_entries(
     std::fs::create_dir_all(&export_root).map_err(|e| e.to_string())?;
     // 每次导出放入独立时间戳子目录，避免 cover_N.jpg 被下一次导出静默覆盖（损坏旧导出文件的图片引用）
     let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
-    let export_dir = export_root.join(format!("export_{}", timestamp));
+    let export_dir = export_root.join(format!("export_{}_{}", timestamp, Uuid::new_v4()));
     std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
 
+    if include_images && matches!(format.as_str(), "json" | "csv") {
+        for entry in &mut export_entries {
+            for path in &mut entry.images {
+                let bytes = read_registered_image(&conn, path)?;
+                let name = format!("cover_{}.{}", Uuid::new_v4(), validate_image_bytes(&bytes)?);
+                std::fs::write(export_dir.join(&name), bytes).map_err(|e| e.to_string())?;
+                *path = name;
+            }
+        }
+    }
     let content = match format.as_str() {
         "json" => serde_json::to_string_pretty(&export_entries).map_err(|e| e.to_string())?,
         "csv" => {
-            let mut csv = String::from("名称,类型,创作者,等级,评价,品鉴日期,标签,链接\n");
+            let mut writer = csv::Writer::from_writer(Vec::new());
+            writer
+                .write_record([
+                    "名称",
+                    "类型",
+                    "创作者",
+                    "等级",
+                    "评价",
+                    "品鉴日期",
+                    "标签",
+                    "链接",
+                    "图片",
+                ])
+                .map_err(|e| e.to_string())?;
             for entry in &export_entries {
-                let tags_str = entry.tags.join(";");
-                let links_str = entry.links.iter().map(|l| format!("{}:{}", l.label, l.url)).collect::<Vec<_>>().join(";");
-                csv.push_str(&format!(
-                    "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"\n",
-                    entry.name.replace('"', "\"\""),
-                    entry.genre_name.replace('"', "\"\""),
-                    entry.creator.as_deref().unwrap_or("").replace('"', "\"\""),
-                    entry.rating,
-                    entry.review.replace('"', "\"\""),
-                    entry.tasting_date.as_deref().unwrap_or("").replace('"', "\"\""),
-                    tags_str.replace('"', "\"\""),
-                    links_str.replace('"', "\"\"")
-                ));
+                let links = entry
+                    .links
+                    .iter()
+                    .map(|l| format!("{}:{}", l.label, l.url))
+                    .collect::<Vec<_>>()
+                    .join(";");
+                let images = serde_json::to_string(&entry.images).map_err(|e| e.to_string())?;
+                writer
+                    .write_record([
+                        entry.name.as_str(),
+                        &entry.genre_name,
+                        entry.creator.as_deref().unwrap_or(""),
+                        &entry.rating,
+                        &entry.review,
+                        entry.tasting_date.as_deref().unwrap_or(""),
+                        &entry.tags.join(";"),
+                        &links,
+                        &images,
+                    ])
+                    .map_err(|e| e.to_string())?;
             }
-            csv
+            String::from_utf8(writer.into_inner().map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?
         }
         "markdown" => {
             let mut md = String::from("# 作品列表\n\n");
@@ -1023,16 +1628,11 @@ fn export_entries(
                 md.push_str(&format!("## {}\n\n", entry.name));
                 if include_images {
                     for img_path in &entry.images {
-                        let src = resolve_image_path(img_path);
-                        if src.exists() {
+                        if let Ok(bytes) = read_registered_image(&conn, img_path) {
                             cover_counter += 1;
-                            let ext = std::path::Path::new(img_path)
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .unwrap_or("jpg")
-                                .to_lowercase();
+                            let ext = validate_image_bytes(&bytes)?;
                             let fname = format!("cover_{}.{}", cover_counter, ext);
-                            if std::fs::copy(&src, export_dir.join(&fname)).is_ok() {
+                            if std::fs::write(export_dir.join(&fname), &bytes).is_ok() {
                                 md.push_str(&format!("![](./{})\n\n", fname));
                             }
                         }
@@ -1076,30 +1676,38 @@ fn export_entries(
                  </style>\n</head>\n<body>\n<h1>作品列表</h1>\n",
             );
             for entry in &export_entries {
-                html.push_str(&format!("<div class=\"entry\"><h2>{}</h2>\n", escape_html(&entry.name)));
+                html.push_str(&format!(
+                    "<div class=\"entry\"><h2>{}</h2>\n",
+                    escape_html(&entry.name)
+                ));
                 html.push_str(&format!(
                     "<p class=\"meta\">{} · <span class=\"rating\">{}</span> · {}{}</p>\n",
                     escape_html(&entry.genre_name),
                     escape_html(&entry.rating),
                     escape_html(entry.tasting_date.as_deref().unwrap_or("")),
-                    entry.creator.as_deref().map(|c| format!(" · {}", escape_html(c))).unwrap_or_default()
+                    entry
+                        .creator
+                        .as_deref()
+                        .map(|c| format!(" · {}", escape_html(c)))
+                        .unwrap_or_default()
                 ));
                 if !entry.tags.is_empty() {
                     html.push_str(&format!(
                         "<p class=\"meta\">标签：{}</p>\n",
-                        entry.tags.iter().map(|t| escape_html(t)).collect::<Vec<_>>().join("、")
+                        entry
+                            .tags
+                            .iter()
+                            .map(|t| escape_html(t))
+                            .collect::<Vec<_>>()
+                            .join("、")
                     ));
                 }
                 // 图片：Base64 嵌入
                 html.push_str("<div class=\"images\">");
                 for img_path in &entry.images {
-                    if let Ok(bytes) = std::fs::read(resolve_image_path(img_path)) {
+                    if let Ok(bytes) = read_registered_image(&conn, img_path) {
                         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                        let ext = std::path::Path::new(img_path)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("jpg")
-                            .to_lowercase();
+                        let ext = validate_image_bytes(&bytes)?;
                         html.push_str(&format!(
                             "<img src=\"data:image/{};base64,{}\" alt=\"\">\n",
                             ext, b64
@@ -1120,7 +1728,11 @@ fn export_entries(
     };
 
     // 保存文件（markdown 用 .md 后缀；文件位于本次导出的时间戳子目录内）
-    let ext = if format.as_str() == "markdown" { "md" } else { format.as_str() };
+    let ext = if format.as_str() == "markdown" {
+        "md"
+    } else {
+        format.as_str()
+    };
     let export_path = export_dir.join(format!("export.{}", ext));
     std::fs::write(&export_path, &content).map_err(|e| e.to_string())?;
 
@@ -1232,19 +1844,46 @@ fn fetch_cover_candidates(
 /// 未设置代理时直连。超时秒数由调用方指定。
 fn build_client(timeout_secs: u64) -> Result<reqwest::blocking::Client, String> {
     let mut builder = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("重定向次数过多");
+            }
+            // 收到重定向响应才计时，保证服务端实际收到请求的间隔。
+            if let Some(previous) = attempt.previous().last() {
+                if let Ok(host) = request_host(previous.as_str()) {
+                    match LAST_REQUEST_BY_HOST.lock() {
+                        Ok(mut times) => { times.insert(host, Instant::now()); },
+                        Err(error) => return attempt.error(std::io::Error::other(error.to_string())),
+                    }
+                }
+            }
+            match wait_for_request_slot(attempt.url().as_str()) {
+                Ok(()) => attempt.follow(),
+                Err(error) => attempt.error(std::io::Error::other(error)),
+            }
+        }))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .timeout(std::time::Duration::from_secs(timeout_secs));
 
-    let proxy_env = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
-        .iter()
-        .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()));
+    let proxy_env = [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    .iter()
+    .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()));
     if let Some(proxy) = proxy_env {
         if let Ok(p) = reqwest::Proxy::all(&proxy) {
             builder = builder.proxy(p);
         }
     }
 
-    builder.build().map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
+    builder
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
 }
 
 fn fetch_bing(
@@ -1261,10 +1900,7 @@ fn fetch_bing(
         urlencoding::encode(&query)
     );
 
-    let html = client
-        .get(&url)
-        .send()
-        .map_err(|e| format!("请求失败: {}", e))?
+    let html = send_rate_limited(client.get(&url), &url)?
         .text()
         .map_err(|e| format!("读取失败: {}", e))?;
 
@@ -1310,11 +1946,12 @@ fn fetch_douban(
         cat
     );
 
-    let resp = client
-        .get(&url)
-        .header("Referer", format!("https://{}.douban.com/", cat))
-        .send()
-        .map_err(|e| format!("请求失败: {}", e))?;
+    let resp = send_rate_limited(
+        client
+            .get(&url)
+            .header("Referer", format!("https://{}.douban.com/", cat)),
+        &url,
+    )?;
 
     let text = resp.text().map_err(|e| format!("读取失败: {}", e))?;
 
@@ -1430,9 +2067,7 @@ fn search_bangumi_web(
         req = req.header("Cookie", c);
     }
 
-    let html = req
-        .send()
-        .map_err(|e| format!("请求失败: {}", e))?
+    let html = send_rate_limited(req, &url)?
         .text()
         .map_err(|e| format!("读取失败: {}", e))?;
 
@@ -1515,11 +2150,10 @@ fn fetch_anilist(
         "variables": { "search": title }
     });
 
-    let resp = client
-        .post("https://graphql.anilist.co")
-        .json(&body)
-        .send()
-        .map_err(|e| format!("请求失败: {}", e))?;
+    let resp = send_rate_limited(
+        client.post("https://graphql.anilist.co").json(&body),
+        "https://graphql.anilist.co",
+    )?;
 
     let json: serde_json::Value = resp.json().map_err(|e| format!("解析失败: {}", e))?;
     let mut results = Vec::new();
@@ -1568,10 +2202,7 @@ fn fetch_itunes(
         urlencoding::encode(&query)
     );
 
-    let resp = client
-        .get(&url)
-        .send()
-        .map_err(|e| format!("请求失败: {}", e))?;
+    let resp = send_rate_limited(client.get(&url), &url)?;
     let json: serde_json::Value = resp.json().map_err(|e| format!("解析失败: {}", e))?;
 
     let mut results = Vec::new();
@@ -1616,10 +2247,7 @@ fn fetch_steam_search(
         "https://store.steampowered.com/api/storesearch/?term={}&cc=cn&l=schinese",
         urlencoding::encode(title)
     );
-    let resp = client
-        .get(&url)
-        .send()
-        .map_err(|e| format!("请求失败: {}", e))?;
+    let resp = send_rate_limited(client.get(&url), &url)?;
     let json: serde_json::Value = resp.json().map_err(|e| format!("解析失败: {}", e))?;
 
     let mut results = Vec::new();
@@ -1649,91 +2277,48 @@ fn fetch_steam_search(
 
 // ---- 封面下载 ----
 
+fn fetch_cover_preview_data(url: &str) -> Result<String, String> {
+    let client = build_client(30)?;
+    let (bytes, ext) = validate_image_response(send_rate_limited(client.get(url), url)?)?;
+    let mime = if ext == "jpg" { "jpeg" } else { ext };
+    Ok(format!(
+        "data:image/{};base64,{}",
+        mime,
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+#[tauri::command]
+async fn fetch_cover_preview(url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || fetch_cover_preview_data(&url))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// 下载封面图片到本地项目 resource/cover_image 目录
 #[tauri::command]
-fn download_cover(
-    url: String,
+fn download_cover(url: String, title: String, creator: Option<String>) -> Result<String, String> {
+    let client = build_client(30)?;
+    let resp = send_rate_limited(client.get(&url), &url)?;
+    let (bytes, _) = validate_image_response(resp)?;
+    store_image_bytes(
+        &bytes,
+        &format!("{}_{}", title, creator.unwrap_or_default()),
+    )
+}
+
+/// 复制用户选择的本地图片，扩展名取自内容，文件名使用 UUID 防止并发覆盖。
+#[tauri::command]
+fn import_local_image(
+    source_path: String,
     title: String,
     creator: Option<String>,
 ) -> Result<String, String> {
-    let title_clean = sanitize_filename(&title);
-    let creator_clean = match creator {
-        Some(c) if !c.trim().is_empty() => format!("_{}", sanitize_filename(c.trim())),
-        _ => String::new(),
-    };
-
-    let client = build_client(30)?;
-
-    let resp = client
-        .get(&url)
-        .send()
-        .map_err(|e| format!("下载失败: {}", e))?;
-    let bytes = resp.bytes().map_err(|e| format!("读取失败: {}", e))?;
-
-    // 从 URL 推断后缀
-    let ext = guess_ext_from_url(&url).unwrap_or_else(|| "jpg".to_string());
-
-    // 目标路径：项目根/resource/cover_image
-    let project_root = get_project_root();
-    let cover_dir = project_root.join("resource").join("cover_image");
-    std::fs::create_dir_all(&cover_dir).map_err(|e| format!("创建目录失败: {}", e))?;
-
-    // 处理文件名冲突：同名时附加 (1), (2)...
-    let base = format!("{}{}.{}", title_clean, creator_clean, ext);
-    let mut target = cover_dir.join(&base);
-    let mut counter = 1u32;
-    while target.exists() {
-        let stem = format!("{}{} ({}).{}", title_clean, creator_clean, counter, ext);
-        target = cover_dir.join(stem);
-        counter += 1;
-    }
-
-    std::fs::write(&target, &bytes).map_err(|e| format!("写入失败: {}", e))?;
-
-    Ok(to_project_rel_path(&target))
-}
-
-/// 处理拖入的本地图片：复制到 cover_image 目录并重命名
-#[tauri::command]
-fn import_local_image(source_path: String, title: String, creator: Option<String>) -> Result<String, String> {
-    // 获取文件后缀
-    let ext = std::path::Path::new(&source_path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_else(|| "jpg".to_string());
-
-    // 清理文件名
-    let title_clean = if title.is_empty() {
-        "未命名".to_string()
-    } else {
-        sanitize_filename(&title)
-    };
-    let creator_clean = creator
-        .as_ref()
-        .filter(|c| !c.is_empty())
-        .map(|c| sanitize_filename(c))
-        .unwrap_or_else(|| "未知作者".to_string());
-
-    // 目标目录
-    let project_root = get_project_root();
-    let cover_dir = project_root.join("resource").join("cover_image");
-    std::fs::create_dir_all(&cover_dir).map_err(|e| format!("创建目录失败: {}", e))?;
-
-    // 构建文件名
-    let base = format!("{}_{}.{}", title_clean, creator_clean, ext);
-    let mut target = cover_dir.join(&base);
-    let mut counter = 1u32;
-    while target.exists() {
-        let stem = format!("{}_{} ({}).{}", title_clean, creator_clean, counter, ext);
-        target = cover_dir.join(stem);
-        counter += 1;
-    }
-
-    // 复制文件
-    std::fs::copy(&source_path, &target).map_err(|e| format!("复制文件失败: {}", e))?;
-
-    Ok(to_project_rel_path(&target))
+    let bytes = read_image_file(std::path::Path::new(&source_path))?;
+    store_image_bytes(
+        &bytes,
+        &format!("{}_{}", title, creator.unwrap_or_default()),
+    )
 }
 
 fn sanitize_filename(s: &str) -> String {
@@ -1748,31 +2333,33 @@ fn sanitize_filename(s: &str) -> String {
         .to_string()
 }
 
-fn guess_ext_from_url(url: &str) -> Option<String> {
-    // 去除 query string
-    let path = url.split('?').next().unwrap_or(url);
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())?;
-    let lower = ext.to_lowercase();
-    if ["jpg", "jpeg", "png", "webp", "gif", "bmp"].contains(&lower.as_str()) {
-        Some(if lower == "jpeg" { "jpg".to_string() } else { lower })
-    } else {
-        None
-    }
+fn backup_connection_to_path(
+    source: &Connection,
+    backup_path: &std::path::Path,
+) -> Result<(), String> {
+    let mut destination = Connection::open(backup_path).map_err(|e| e.to_string())?;
+    let backup = rusqlite::backup::Backup::new(source, &mut destination)
+        .map_err(|e| format!("创建备份会话失败: {}", e))?;
+    backup
+        .run_to_completion(5, std::time::Duration::from_millis(250), None)
+        .map_err(|e| format!("备份失败: {}", e))
 }
 
 #[tauri::command]
 fn backup_database() -> Result<String, String> {
-    let db_path = get_db_path();
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+    retry_image_cleanup(&conn, &[])?;
     let project_root = get_project_root();
     let backup_dir = project_root.join("backups");
     std::fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
 
-    let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
-    let backup_path = backup_dir.join(format!("backup_{}.db", timestamp));
-
-    std::fs::copy(&db_path, &backup_path).map_err(|e| e.to_string())?;
+    let timestamp = Utc::now().format("%Y%m%d_%H%M%S_%3f");
+    let backup_path = backup_dir.join(format!("backup_{}_{}.db", timestamp, Uuid::new_v4()));
+    if let Err(error) = backup_connection_to_path(&conn, &backup_path) {
+        let _ = std::fs::remove_file(&backup_path);
+        return Err(error);
+    }
+    drop(conn);
 
     // 清理旧备份：只保留最近 20 份（含关闭时自动备份，防止无限累积）
     if let Ok(entries) = std::fs::read_dir(&backup_dir) {
@@ -1806,13 +2393,10 @@ fn import_db_into(source_path: &str, dst: &mut Connection) -> Result<(), String>
     }
 
     // 在线备份 API：把源文件数据导入目标连接（无需关闭连接/覆盖文件）
-    let src = Connection::open_with_flags(
-        source_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| format!("无法打开源数据库: {}", e))?;
-    let backup = rusqlite::backup::Backup::new(&src, dst)
-        .map_err(|e| format!("创建导入会话失败: {}", e))?;
+    let src = Connection::open_with_flags(source_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("无法打开源数据库: {}", e))?;
+    let backup =
+        rusqlite::backup::Backup::new(&src, dst).map_err(|e| format!("创建导入会话失败: {}", e))?;
     backup
         .run_to_completion(5, std::time::Duration::from_millis(250), None)
         .map_err(|e| format!("导入失败: {}", e))?;
@@ -1827,7 +2411,8 @@ fn import_database(source_path: String) -> Result<(), String> {
     backup_database().map_err(|e| format!("备份当前数据库失败: {}", e))?;
 
     let mut dst = DB.lock().map_err(|e| e.to_string())?;
-    import_db_into(&source_path, &mut dst)
+    import_db_into(&source_path, &mut dst)?;
+    init_database(&dst).map_err(|e| e.to_string())
 }
 
 /// 统计面板数据
@@ -1927,12 +2512,14 @@ fn find_or_create_genre(conn: &Connection, name: &str) -> Result<String, String>
     if name.is_empty() {
         return Err("类型名为空".to_string());
     }
-    if let Ok(id) = conn.query_row(
+    match conn.query_row(
         "SELECT id FROM genres WHERE name = ?1",
         params![name],
         |row| row.get(0),
     ) {
-        return Ok(id);
+        Ok(id) => return Ok(id),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+        Err(error) => return Err(error.to_string()),
     }
     let id = Uuid::new_v4().to_string();
     conn.execute(
@@ -1973,6 +2560,11 @@ fn parse_import_csv(content: &str) -> Result<Vec<ExportEntry>, String> {
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(true)
         .from_reader(content.as_bytes());
+    let image_column = rdr
+        .headers()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .position(|h| h == "图片" || h == "images");
     let mut out = Vec::new();
     for record in rdr.records() {
         let record = record.map_err(|e| e.to_string())?;
@@ -2000,6 +2592,14 @@ fn parse_import_csv(content: &str) -> Result<Vec<ExportEntry>, String> {
             .filter(|s| !s.is_empty())
             .collect();
         let links = parse_links(record.get(7).unwrap_or(""));
+        let images = match image_column
+            .and_then(|i| record.get(i))
+            .filter(|s| !s.trim().is_empty())
+        {
+            Some(value) => serde_json::from_str::<Vec<String>>(value)
+                .map_err(|e| format!("图片列必须是路径 JSON 数组: {}", e))?,
+            None => vec![],
+        };
         out.push(ExportEntry {
             name,
             genre_name: genre,
@@ -2009,7 +2609,7 @@ fn parse_import_csv(content: &str) -> Result<Vec<ExportEntry>, String> {
             tasting_date,
             links,
             tags,
-            images: vec![],
+            images,
         });
     }
     Ok(out)
@@ -2019,7 +2619,8 @@ fn parse_import_csv(content: &str) -> Result<Vec<ExportEntry>, String> {
 #[tauri::command]
 fn import_entries(path: String, format: String) -> Result<ImportResult, String> {
     let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
-    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let import_file = std::path::PathBuf::from(&path);
+    let mut conn = DB.lock().map_err(|e| e.to_string())?;
 
     let records: Vec<ExportEntry> = match format.as_str() {
         "json" => serde_json::from_str::<Vec<ExportEntry>>(&content)
@@ -2033,15 +2634,27 @@ fn import_entries(path: String, format: String) -> Result<ImportResult, String> 
     let mut errors: Vec<String> = Vec::new();
 
     for rec in records {
+        let record_name = rec.name.clone();
+        let (stored_images, copied_files) = match copy_imported_images(&rec.images, &import_file) {
+            Ok(value) => value,
+            Err(error) => {
+                failed += 1;
+                if errors.len() < 20 {
+                    errors.push(format!("《{}》: {}", record_name, error));
+                }
+                continue;
+            }
+        };
+
         let result = (|| -> Result<(), String> {
-            // 类型：查找或创建
-            let genre_id = find_or_create_genre(&conn, &rec.genre_name)?;
-            // 字段校验
-            validate_entry_fields(&rec.name, &genre_id, &rec.rating, &rec.review, &conn)?;
+            validate_external_links(&rec.links)?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let genre_id = find_or_create_genre(&tx, &rec.genre_name)?;
+            validate_entry_fields(&rec.name, &genre_id, &rec.rating, &rec.review, &tx)?;
 
             let id = Uuid::new_v4().to_string();
             let now = Utc::now().to_rfc3339();
-            conn.execute(
+            tx.execute(
                 "INSERT INTO entries (id, name, genre_id, creator, rating, review, tasting_date, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
@@ -2062,7 +2675,7 @@ fn import_entries(path: String, format: String) -> Result<ImportResult, String> 
                 if link.url.trim().is_empty() {
                     continue;
                 }
-                conn.execute(
+                tx.execute(
                     "INSERT INTO external_links (id, entry_id, url, label) VALUES (?1, ?2, ?3, ?4)",
                     params![Uuid::new_v4().to_string(), id, link.url, link.label],
                 )
@@ -2072,31 +2685,29 @@ fn import_entries(path: String, format: String) -> Result<ImportResult, String> 
                 if tag.trim().is_empty() {
                     continue;
                 }
-                conn.execute(
+                tx.execute(
                     "INSERT INTO tags (id, entry_id, name) VALUES (?1, ?2, ?3)",
                     params![Uuid::new_v4().to_string(), id, tag],
                 )
                 .map_err(|e| e.to_string())?;
             }
-            for (i, img) in rec.images.iter().enumerate() {
-                if img.trim().is_empty() {
-                    continue;
-                }
-                conn.execute(
+            for (i, image_path) in stored_images.iter().enumerate() {
+                tx.execute(
                     "INSERT INTO entry_images (id, entry_id, path, is_primary) VALUES (?1, ?2, ?3, ?4)",
-                    params![Uuid::new_v4().to_string(), id, img, if i == 0 { 1 } else { 0 }],
+                    params![Uuid::new_v4().to_string(), id, image_path, if i == 0 { 1 } else { 0 }],
                 )
                 .map_err(|e| e.to_string())?;
             }
-            Ok(())
+            tx.commit().map_err(|e| e.to_string())
         })();
 
         match result {
             Ok(()) => imported += 1,
-            Err(e) => {
+            Err(error) => {
+                remove_copied_files(&copied_files);
                 failed += 1;
                 if errors.len() < 20 {
-                    errors.push(format!("《{}》: {}", rec.name, e));
+                    errors.push(format!("《{}》: {}", record_name, error));
                 }
             }
         }
@@ -2116,23 +2727,59 @@ pub struct ImportResult {
     pub errors: Vec<String>,
 }
 
+fn read_registered_image(conn: &Connection, path: &str) -> Result<Vec<u8>, String> {
+    let resolved = if let Ok(managed) = validate_project_image_path(path) {
+        managed
+    } else {
+        let raw = std::path::Path::new(path);
+        if !raw.is_absolute() {
+            return Err("图片路径越出封面目录".to_string());
+        }
+        let registered: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM entry_images WHERE path = ?1)",
+                params![path],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !registered {
+            return Err("只能读取已登记的旧图片".to_string());
+        }
+        raw.to_path_buf()
+    };
+    read_image_file(&resolved)
+}
+
 #[tauri::command]
 fn get_image_base64(path: String) -> Result<String, String> {
-    let bytes = std::fs::read(resolve_image_path(&path))
-        .map_err(|e| format!("读取图片失败: {}", e))?;
+    let conn = DB.lock().map_err(|e| e.to_string())?;
+    let bytes = read_registered_image(&conn, &path)?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
 /// 保存前端生成的图片（分享卡片等）：data URL → 文件
 #[tauri::command]
 fn save_base64_image(data_url: String, path: String) -> Result<(), String> {
+    let target = std::path::Path::new(&path);
+    if !target.is_absolute()
+        || !target
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+    {
+        return Err("分享卡片只能保存为绝对路径的 PNG 文件".to_string());
+    }
     let b64 = data_url
-        .split(',')
-        .nth(1)
-        .ok_or_else(|| "无效的图片数据".to_string())?;
+        .strip_prefix("data:image/png;base64,")
+        .ok_or_else(|| "分享卡片必须是 PNG 图片".to_string())?;
+    if b64.len() > 14 * 1024 * 1024 {
+        return Err("图片超过 10 MiB 大小限制".into());
+    }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .map_err(|e| format!("图片数据解码失败: {}", e))?;
+    if validate_image_bytes(&bytes)? != "png" {
+        return Err("分享卡片必须是 PNG 图片".into());
+    }
     std::fs::write(&path, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;
     Ok(())
 }
@@ -2180,6 +2827,7 @@ pub fn run() {
             // 封面爬取
             get_cover_sources,
             fetch_cover_candidates,
+            fetch_cover_preview,
             download_cover,
             import_local_image,
             get_image_base64,
@@ -2188,20 +2836,22 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|_app_handle, event| match event {
-        tauri::RunEvent::ExitRequested { .. } => {
+    app.run(|_app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
             // 关闭时自动备份数据库
             if let Err(e) = backup_database() {
                 eprintln!("[WARN] 退出时自动备份失败: {}", e);
             }
         }
-        _ => {}
     });
 }
 
 // ============================================================================
 // 封面数据源网络测试（cargo test -- --nocapture）
 // ============================================================================
+
+#[cfg(test)]
+mod reliability_tests;
 
 #[cfg(test)]
 mod cover_tests {
@@ -2247,6 +2897,45 @@ mod cover_tests {
     }
 
     #[test]
+    fn test_foreign_keys_are_enabled_and_cascade() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        init_database(&conn).unwrap();
+
+        let foreign_keys: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+
+        let genre_id: String = conn
+            .query_row("SELECT id FROM genres LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO entries (id, name, genre_id, rating, review, created_at, updated_at)
+             VALUES ('entry', '作品', ?1, 'S', '这是一段足够长的评价文本', 'now', 'now')",
+            params![genre_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO entry_images (id, entry_id, path, is_primary)
+             VALUES ('image', 'entry', 'resource/cover_image/a.jpg', 1)",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM entries WHERE id = 'entry'", [])
+            .unwrap();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entry_images WHERE entry_id = 'entry'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
     fn test_read_cookie_file() {
         let dir = std::env::temp_dir().join(format!("prefdb_cookie_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2285,7 +2974,9 @@ mod cover_tests {
         );
         // 非 lain 图床 / 无尺寸段 → 原样返回
         assert_eq!(
-            upgrade_cover_url("https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx1.jpg"),
+            upgrade_cover_url(
+                "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx1.jpg"
+            ),
             "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx1.jpg"
         );
         // 无协议前缀
@@ -2300,7 +2991,9 @@ mod cover_tests {
         // 相对路径 → 拼项目根（绝对路径且以相对路径结尾）
         let rel = resolve_image_path("resource/cover_image/a.jpg");
         assert!(rel.is_absolute());
-        assert!(rel.to_string_lossy().ends_with("resource/cover_image/a.jpg"));
+        assert!(rel
+            .to_string_lossy()
+            .ends_with("resource/cover_image/a.jpg"));
 
         // 绝对路径（旧数据）→ 原样返回
         let abs = resolve_image_path("D:\\some\\where\\b.jpg");
@@ -2329,9 +3022,7 @@ mod cover_tests {
 
         // 导入后数据可用
         import_db_into(src_path.to_str().unwrap(), &mut dst).unwrap();
-        let v: i64 = dst
-            .query_row("SELECT x FROM t", [], |r| r.get(0))
-            .unwrap();
+        let v: i64 = dst.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
         assert_eq!(v, 42);
 
         // 非法文件被拒绝

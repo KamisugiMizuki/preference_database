@@ -1,6 +1,7 @@
 import "./styles.css";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import * as api from "./api";
+import { httpUrl } from "./security";
 import type {
   Genre,
   Entry,
@@ -138,7 +139,7 @@ function getGenreIcon(name: string): string {
     小说: "📚",
     影视剧: "🎥",
   };
-  return icons[name] || "📁";
+  return Object.prototype.hasOwnProperty.call(icons, name) ? icons[name] : "📁";
 }
 
 function formatDate(dateStr: string | null): string {
@@ -156,10 +157,10 @@ function renderGenres() {
     .map(
       (g) => `
     <div class="filter-item">
-      <input type="checkbox" id="genre-${g.id}" value="${g.id}" ${
+      <input type="checkbox" id="genre-${escapeHtml(g.id)}" value="${escapeHtml(g.id)}" ${
         selectedGenreIds.includes(g.id) ? "checked" : ""
       } />
-      <label for="genre-${g.id}" style="color:${getGenreColor(g.name)}">${getGenreIcon(g.name)} ${g.name}</label>
+      <label for="genre-${escapeHtml(g.id)}" style="color:${getGenreColor(g.name)}">${getGenreIcon(g.name)} ${escapeHtml(g.name)}</label>
     </div>
   `
     )
@@ -167,7 +168,7 @@ function renderGenres() {
 
   const entryGenreSelect = $<HTMLSelectElement>("entry-genre");
   entryGenreSelect.innerHTML = genres
-    .map((g) => `<option value="${g.id}">${g.name}</option>`)
+    .map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)}</option>`)
     .join("");
 
   genreFilterEl.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
@@ -241,7 +242,7 @@ const GENRE_COLORS: Record<string, string> = {
 };
 
 function getGenreColor(name: string): string {
-  return GENRE_COLORS[name] || "#868e96";
+  return Object.prototype.hasOwnProperty.call(GENRE_COLORS, name) ? GENRE_COLORS[name] : "#868e96";
 }
 
 /// 渲染一批条目卡片（append 时只追加不重绘；图片异步逐张填充，不阻塞渲染）
@@ -250,8 +251,8 @@ function renderEntryCards(list: api.EntrySummary[], append = false) {
   const html = list
     .map(
       (e, idx) => `
-    <div class="entry-card" data-id="${e.id}" tabindex="0" role="button" aria-label="查看《${escapeHtml(e.name)}》详情">
-      <input type="checkbox" class="entry-select" data-id="${e.id}" aria-label="选择《${escapeHtml(e.name)}》" ${
+    <div class="entry-card" data-id="${escapeHtml(e.id)}" tabindex="0" role="button" aria-label="查看《${escapeHtml(e.name)}》详情">
+      <input type="checkbox" class="entry-select" data-id="${escapeHtml(e.id)}" aria-label="选择《${escapeHtml(e.name)}》" ${
         selectedEntryIds.has(e.id) ? "checked" : ""
       } />
       <div class="entry-card-placeholder" data-idx="${idx}" style="background:${getGenreColor(
@@ -260,7 +261,7 @@ function renderEntryCards(list: api.EntrySummary[], append = false) {
       <div class="entry-card-content">
         <div class="entry-card-header">
           <span class="entry-card-title">${escapeHtml(e.name)}</span>
-          <span class="rating-badge ${e.rating}">${e.rating}</span>
+          <span class="rating-badge ${escapeHtml(e.rating)}">${escapeHtml(e.rating)}</span>
           <span class="entry-card-genre" style="color:${getGenreColor(e.genre_name)}">${escapeHtml(e.genre_name)}</span>
         </div>
         <p class="entry-card-preview">${escapeHtml(e.review_preview)}</p>
@@ -333,7 +334,7 @@ function renderEntryCards(list: api.EntrySummary[], append = false) {
       `.entry-card-placeholder[data-idx="${i}"]`
     );
     if (placeholder) {
-      placeholder.innerHTML = `<img class="entry-card-image" src="${dataUrl}" alt="${escapeHtml(e.name)}" />`;
+      placeholder.innerHTML = `<img class="entry-card-image" src="${escapeHtml(dataUrl)}" alt="${escapeHtml(e.name)}" />`;
     }
   });
 }
@@ -402,7 +403,7 @@ async function renderDetailModal(entry: Entry) {
   if (primaryImage) {
     const idx = entry.images.findIndex((img) => img.id === primaryImage.id);
     mainImage.innerHTML = images[idx] 
-      ? `<img src="${images[idx]}" alt="${escapeHtml(entry.name)}" />`
+      ? `<img src="${escapeHtml(images[idx]!)}" alt="${escapeHtml(entry.name)}" />`
       : `<div class="placeholder">${getGenreIcon($("detail-genre").textContent || "")}</div>`;
   } else {
     mainImage.innerHTML = `<div class="placeholder">${getGenreIcon($("detail-genre").textContent || "")}</div>`;
@@ -415,7 +416,7 @@ async function renderDetailModal(entry: Entry) {
       (img, idx) =>
         images[idx]
           ? `<img class="thumbnail ${primaryImage?.id === img.id ? "active" : ""}"
-         src="${images[idx]}"
+         src="${escapeHtml(images[idx]!)}"
          data-path="${escapeHtml(img.path)}"
          tabindex="0" role="button"
          aria-label="查看第 ${idx + 1} 张图" />`
@@ -430,17 +431,19 @@ async function renderDetailModal(entry: Entry) {
 
   const linksEl = $("detail-links");
   linksEl.innerHTML = entry.links
-    .map(
-      (l) => `
-    <a class="detail-link" href="${escapeHtml(l.url)}" target="_blank">${escapeHtml(l.label || l.url)}</a>
-  `
-    )
+    .map((l) => {
+      const url = httpUrl(l.url);
+      const label = escapeHtml(l.label || l.url);
+      return url
+        ? `<a class="detail-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+        : `<span class="detail-link">${label}</span>`;
+    })
     .join("");
 
   thumbnails.querySelectorAll(".thumbnail").forEach((thumb, idx) => {
     thumb.addEventListener("click", () => {
       mainImage.innerHTML = images[idx] 
-        ? `<img src="${images[idx]}" alt="${escapeHtml(entry.name)}" />`
+        ? `<img src="${escapeHtml(images[idx]!)}" alt="${escapeHtml(entry.name)}" />`
         : `<div class="placeholder">${getGenreIcon($("detail-genre").textContent || "")}</div>`;
       thumbnails.querySelectorAll(".thumbnail").forEach((t) => t.classList.remove("active"));
       thumb.classList.add("active");
@@ -631,7 +634,7 @@ function fillStats(stats: api.Stats) {
   $("stats-scope").textContent = hasActiveFilter() ? "当前筛选范围内" : "全部作品";
   renderStatsBars("stats-rating", stats.rating_dist, (v) => {
     const colors: Record<string, string> = { S: "#ff6b6b", A: "#ffa94d", B: "#69db7c", C: "#15aabf" };
-    return colors[v] || "#a6adc8";
+    return Object.prototype.hasOwnProperty.call(colors, v) ? colors[v] : "#a6adc8";
   });
   renderStatsBars("stats-genre", stats.genre_dist, (v) => getGenreColor(v));
   renderStatsBars("stats-year", stats.year_dist, () => "#a6adc8");
@@ -676,7 +679,7 @@ function renderTagFilter(tags: string[]) {
       <input type="checkbox" id="tag-chk-${i}" data-idx="${i}" ${
         selectedTags.includes(t) ? "checked" : ""
       } />
-      <label for="tag-chk-${i}">${t}</label>
+      <label for="tag-chk-${i}">${escapeHtml(t)}</label>
     </div>
   `
     )
@@ -881,9 +884,9 @@ async function populateEntryForm(entry: Entry) {
   imagesContainer.innerHTML = entry.images
     .map(
       (img, idx) => `
-    <div class="image-item" data-id="${img.id}" data-path="${escapeHtml(img.path)}">
-      <img src="${images[idx] || ""}" />
-      <button type="button" class="remove-btn" data-id="${img.id}">×</button>
+    <div class="image-item" data-id="${escapeHtml(img.id)}" data-path="${escapeHtml(img.path)}">
+      <img src="${escapeHtml(images[idx] || "")}" />
+      <button type="button" class="remove-btn" data-id="${escapeHtml(img.id)}">×</button>
     </div>
   `
     )
@@ -909,73 +912,82 @@ async function handleEntrySubmit(e: Event) {
   submitBtn.disabled = true;
 
   const id = $<HTMLInputElement>("entry-id").value;
-    const name = $<HTMLInputElement>("entry-name").value.trim();
-    const genreId = $<HTMLSelectElement>("entry-genre").value;
-    const creator = $<HTMLInputElement>("entry-creator").value.trim() || null;
-    const rating = $<HTMLSelectElement>("entry-rating").value;
-    const review = $<HTMLTextAreaElement>("entry-review").value;
-    const tastingDate = $<HTMLInputElement>("entry-date").value || null;
-    const tagsStr = $<HTMLInputElement>("entry-tags").value;
-    const tags = tagsStr
-      ? tagsStr.split(/[,，]/).map((t) => t.trim()).filter(Boolean)
-      : [];
+  const name = $<HTMLInputElement>("entry-name").value.trim();
+  const genreId = $<HTMLSelectElement>("entry-genre").value;
+  const creator = $<HTMLInputElement>("entry-creator").value.trim() || null;
+  const rating = $<HTMLSelectElement>("entry-rating").value;
+  const review = $<HTMLTextAreaElement>("entry-review").value;
+  const tastingDate = $<HTMLInputElement>("entry-date").value || null;
+  const tagsStr = $<HTMLInputElement>("entry-tags").value;
+  const tags = tagsStr
+    ? tagsStr.split(/[,，]/).map((t) => t.trim()).filter(Boolean)
+    : [];
 
   const linksContainer = $<HTMLDivElement>("links-container");
   const linkItems = linksContainer.querySelectorAll(".link-item");
   const links: ExternalLink[] = [];
-  linkItems.forEach((item) => {
+  for (const item of linkItems) {
     const label = (item.querySelector(".link-label") as HTMLInputElement).value.trim();
-    const url = (item.querySelector(".link-url") as HTMLInputElement).value.trim();
+    const input = item.querySelector(".link-url") as HTMLInputElement;
+    const url = input.value.trim();
+    if ((url || label) && !httpUrl(url)) {
+      showToast("外部链接必须是完整的 http:// 或 https:// URL", "error");
+      submitBtn.disabled = false;
+      input.focus();
+      return;
+    }
     if (url) {
       links.push({ id: "", entry_id: id, label, url });
     }
-  });
+  }
 
-  // 收集图片路径（只收集新添加的，已有图片通过 data-id 标记）
+  // 图片变更与条目字段一起提交，后端保证同一事务内完成
   const imagesContainer = $<HTMLDivElement>("images-container");
   const imageItems = imagesContainer.querySelectorAll(".image-item");
   const imagePaths: string[] = [];
   const remainingImageIds: string[] = [];
-  
   imageItems.forEach((item) => {
     const path = item.getAttribute("data-path");
     const imgId = item.getAttribute("data-id");
-    
     if (imgId) {
       remainingImageIds.push(imgId);
     } else if (path) {
       imagePaths.push(path);
     }
   });
-
-  // 仅在编辑模式下执行图片删除检查：比较 originalImageIds 与 remainingImageIds
-  if (id && originalImageIds.length > 0) {
-    const removedImageIds = originalImageIds.filter((imgId) => !remainingImageIds.includes(imgId));
-    for (const imgId of removedImageIds) {
-      try {
-        await api.deleteEntryImage(imgId);
-      } catch (err) {
-        console.error("Failed to delete image:", imgId, err);
-      }
-    }
-  }
+  const removedImageIds = id
+    ? originalImageIds.filter((imgId) => !remainingImageIds.includes(imgId))
+    : [];
 
   try {
-    let savedId: string;
     if (id) {
-      await api.updateEntry({ id, name, genre_id: genreId, creator, rating, review, tasting_date: tastingDate, links, tags });
-      savedId = id;
+      await api.updateEntry({
+        id,
+        name,
+        genre_id: genreId,
+        creator,
+        rating,
+        review,
+        tasting_date: tastingDate,
+        links,
+        tags,
+        new_image_paths: imagePaths,
+        removed_image_ids: removedImageIds,
+      });
       showToast("更新成功");
     } else {
-      const newEntry = await api.createEntry({ name, genre_id: genreId, creator, rating, review, tasting_date: tastingDate, links, tags });
-      savedId = newEntry.id;
+      await api.createEntry({
+        name,
+        genre_id: genreId,
+        creator,
+        rating,
+        review,
+        tasting_date: tastingDate,
+        links,
+        tags,
+        image_paths: imagePaths,
+      });
       showToast("创建成功");
-    }
-
-    // 保存新添加的图片路径到数据库
-    for (let i = 0; i < imagePaths.length; i++) {
-      const isPrimary = imagePaths.length > 0 && i === 0;
-      await api.addEntryImage(savedId, imagePaths[i], isPrimary);
     }
 
     formDirty = false;
@@ -984,7 +996,20 @@ async function handleEntrySubmit(e: Event) {
     loadEntries();
   } catch (err) {
     console.error("Failed to save entry:", err);
-    showToast("保存失败: " + formatError(err), "error");
+    let removedStagedImages = false;
+    for (const item of imageItems) {
+      const path = item.getAttribute("data-path");
+      if (item.getAttribute("data-id") || !path) continue;
+      try {
+        // 绕过预览缓存，确认失败回滚后文件是否仍存在。
+        await api.getImageBase64(path);
+      } catch {
+        imageCache.delete(path);
+        item.remove();
+        removedStagedImages = true;
+      }
+    }
+    showToast("保存失败: " + formatError(err) + (removedStagedImages ? "；新增图片已清理，请重新选择图片后保存" : ""), "error");
   } finally {
     submitBtn.disabled = false;
   }
@@ -1584,12 +1609,12 @@ function renderCoverSourceList(batch = false) {
   listEl.innerHTML = filtered
     .map(
       (s) => `
-    <div class="source-item" data-id="${s.id}" tabindex="0" role="button" aria-label="选择数据源：${s.name}">
+    <div class="source-item" data-id="${escapeHtml(s.id)}" tabindex="0" role="button" aria-label="选择数据源：${escapeHtml(s.name)}">
       <div class="source-item-header">
-        <span class="source-item-name">${s.name}</span>
-        <span class="source-item-usage">${USAGE_LABELS[s.usage] || s.usage}</span>
+        <span class="source-item-name">${escapeHtml(s.name)}</span>
+        <span class="source-item-usage">${escapeHtml(Object.prototype.hasOwnProperty.call(USAGE_LABELS, s.usage) ? USAGE_LABELS[s.usage] : s.usage)}</span>
       </div>
-      <div class="source-item-desc">${SOURCE_DESCRIPTIONS[s.id] || s.source_type}</div>
+      <div class="source-item-desc">${escapeHtml(Object.prototype.hasOwnProperty.call(SOURCE_DESCRIPTIONS, s.id) ? SOURCE_DESCRIPTIONS[s.id] : s.source_type)}</div>
     </div>
   `
     )
@@ -1728,7 +1753,7 @@ async function fetchAndShowCandidates(sourceId: string, sourceName: string) {
   infoEl.textContent = `来源：${sourceName} · 关键词：${title}${creator ? " " + creator : ""}`;
 
   const grid = $("cover-candidates");
-  grid.innerHTML = `<div class="cover-empty">🔍 正在从 ${sourceName} 搜索封面...</div>`;
+  grid.innerHTML = `<div class="cover-empty">🔍 正在从 ${escapeHtml(sourceName)} 搜索封面...</div>`;
   openModal("modal-cover-pick");
 
   try {
@@ -1740,7 +1765,7 @@ async function fetchAndShowCandidates(sourceId: string, sourceName: string) {
   }
 }
 
-function renderCoverCandidates(candidates: api.CoverCandidate[], sourceName: string) {
+async function renderCoverCandidates(candidates: api.CoverCandidate[], sourceName: string) {
   const grid = $("cover-candidates");
   if (candidates.length === 0) {
     grid.innerHTML = `<div class="cover-empty">未找到匹配的封面，请尝试其他来源</div>`;
@@ -1759,23 +1784,7 @@ function renderCoverCandidates(candidates: api.CoverCandidate[], sourceName: str
     )
     .join("");
 
-  // 异步加载缩略图/原图
-  candidates.forEach((c, idx) => {
-    const cell = grid.querySelector(`.cover-cell[data-idx="${idx}"]`);
-    if (!cell) return;
-    const img = new Image();
-    img.onload = () => {
-      const loading = cell.querySelector(".cover-loading");
-      if (loading) loading.remove();
-      cell.insertBefore(img, cell.firstChild);
-    };
-    img.onerror = () => {
-      const loading = cell.querySelector(".cover-loading");
-      if (loading) loading.textContent = "加载失败";
-    };
-    img.src = c.thumbnail_url || c.url;
-    img.alt = c.title || "cover";
-  });
+  const previewCells = Array.from(grid.querySelectorAll(".cover-cell"));
 
   // 绑定点击下载事件
   grid.querySelectorAll(".cover-cell").forEach((cell) => {
@@ -1797,6 +1806,25 @@ function renderCoverCandidates(candidates: api.CoverCandidate[], sourceName: str
       }
     });
   });
+
+  // 后端负责限速、重定向及图片校验；浏览器仅加载 data URL。
+  for (let idx = 0; idx < candidates.length; idx++) {
+    const cell = previewCells[idx];
+    if (!cell?.isConnected) break;
+    const candidate = candidates[idx];
+    try {
+      const dataUrl = await api.fetchCoverPreview(candidate.thumbnail_url || candidate.url);
+      if (!cell.isConnected) break;
+      const img = new Image();
+      img.alt = candidate.title || "cover";
+      img.onload = () => { cell.querySelector(".cover-loading")?.remove(); cell.prepend(img); };
+      img.onerror = () => { const loading = cell.querySelector(".cover-loading"); if (loading) loading.textContent = "加载失败"; };
+      img.src = dataUrl;
+    } catch {
+      const loading = cell.querySelector(".cover-loading");
+      if (loading) loading.textContent = "加载失败";
+    }
+  }
 }
 
 async function downloadAndAddCover(candidate: api.CoverCandidate) {
@@ -1829,7 +1857,7 @@ async function addImageToContainer(localPath: string) {
     const dataUrl = await cachedImageBase64(localPath);
     if (!dataUrl) throw new Error("图片加载失败");
     div.innerHTML = `
-      <img src="${dataUrl}" />
+      <img src="${escapeHtml(dataUrl)}" />
       <button type="button" class="remove-btn">×</button>
     `;
   } catch (err) {
